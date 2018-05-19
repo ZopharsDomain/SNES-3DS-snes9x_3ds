@@ -90,24 +90,19 @@
 #ifndef _CPUMACRO_H_
 #define _CPUMACRO_H_
 
-STATIC inline void __attribute__((always_inline)) SetZN16 (uint16 Work)
+STATIC inline void SetZN16 (uint16 Work)
 {
     ICPU._Zero = Work != 0;
     ICPU._Negative = (uint8) (Work >> 8);
 }
 
-STATIC inline void __attribute__((always_inline)) SetZN8 (uint8 Work)
+STATIC inline void SetZN8 (uint8 Work)
 {
     ICPU._Zero = Work;
     ICPU._Negative = Work;
 }
 
-
-//-------------------------------------------------------
-// ADC
-//-------------------------------------------------------
-
-STATIC inline void __attribute__((always_inline)) ADC8 ()
+STATIC inline void ADC8 ()
 {
     Work8 = S9xGetByte (OpAddress);
     
@@ -221,7 +216,7 @@ STATIC inline void __attribute__((always_inline)) ADC8Fast (long addr)
     }
 }
 
-STATIC inline void __attribute__((always_inline)) ADC16 ()
+STATIC inline void ADC16 ()
 {
     Work16 = S9xGetWord (OpAddress);
 
@@ -374,28 +369,19 @@ STATIC inline void __attribute__((always_inline)) ADC16Fast (long addr)
 }
 
 
-//-------------------------------------------------------
-// AND
-//-------------------------------------------------------
-
-STATIC inline void __attribute__((always_inline)) AND16 ()
+STATIC inline void AND16 ()
 {
     Registers.A.W &= S9xGetWord (OpAddress);
     SetZN16 (Registers.A.W);
 }
 
-STATIC inline void __attribute__((always_inline)) AND8 ()
+STATIC inline void AND8 ()
 {
     Registers.AL &= S9xGetByte (OpAddress);
     SetZN8 (Registers.AL);
 }
 
-
-//-------------------------------------------------------
-// ASL (A)
-//-------------------------------------------------------
-
-STATIC inline void __attribute__((always_inline)) A_ASL16 ()
+STATIC inline void A_ASL16 ()
 {
 #ifndef SA1_OPCODES
     CPU.Cycles += ONE_CYCLE;
@@ -405,7 +391,7 @@ STATIC inline void __attribute__((always_inline)) A_ASL16 ()
     SetZN16 (Registers.A.W);
 }
 
-STATIC inline void __attribute__((always_inline)) A_ASL8 ()
+STATIC inline void A_ASL8 ()
 {
 #ifndef SA1_OPCODES
     CPU.Cycles += ONE_CYCLE;
@@ -415,12 +401,7 @@ STATIC inline void __attribute__((always_inline)) A_ASL8 ()
     SetZN8 (Registers.AL);
 }
 
-
-//-------------------------------------------------------
-// ASL
-//-------------------------------------------------------
-
-STATIC inline void __attribute__((always_inline)) ASL16 ()
+STATIC inline void ASL16 ()
 {
 #ifndef SA1_OPCODES
     CPU.Cycles += ONE_CYCLE;
@@ -434,7 +415,7 @@ STATIC inline void __attribute__((always_inline)) ASL16 ()
     SetZN16 (Work16);
 }
 
-STATIC inline void __attribute__((always_inline)) ASL8 ()
+STATIC inline void ASL8 ()
 {
 #ifndef SA1_OPCODES
     CPU.Cycles += ONE_CYCLE;
@@ -446,11 +427,7 @@ STATIC inline void __attribute__((always_inline)) ASL8 ()
     SetZN8 (Work8);
 }
 
-//-------------------------------------------------------
-// BIT
-//-------------------------------------------------------
-
-STATIC inline void __attribute__((always_inline)) BIT16 ()
+STATIC inline void BIT16 ()
 {
     Work16 = S9xGetWord (OpAddress);
     ICPU._Overflow = (Work16 & 0x4000) != 0;
@@ -458,7 +435,7 @@ STATIC inline void __attribute__((always_inline)) BIT16 ()
     ICPU._Zero = (Work16 & Registers.A.W) != 0;
 }
 
-STATIC inline void __attribute__((always_inline)) BIT8 ()
+STATIC inline void BIT8 ()
 {
     Work8 = S9xGetByte (OpAddress);
     ICPU._Overflow = (Work8 & 0x40) != 0;
@@ -466,12 +443,7 @@ STATIC inline void __attribute__((always_inline)) BIT8 ()
     ICPU._Zero = Work8 & Registers.AL;
 }
 
-
-//-------------------------------------------------------
-// CMP
-//-------------------------------------------------------
-
-STATIC inline void __attribute__((always_inline)) CMP16 ()
+STATIC inline void CMP16 ()
 {
     Int32 = (long) Registers.A.W -
 	    (long) S9xGetWord (OpAddress);
@@ -479,7 +451,7 @@ STATIC inline void __attribute__((always_inline)) CMP16 ()
     SetZN16 ((uint16) Int32);
 }
 
-STATIC inline void __attribute__((always_inline)) CMP8 ()
+STATIC inline void CMP8 ()
 {
     Int16 = (short) Registers.AL -
 	    (short) S9xGetByte (OpAddress);
@@ -487,12 +459,7 @@ STATIC inline void __attribute__((always_inline)) CMP8 ()
     SetZN8 ((uint8) Int16);
 }
 
-
-//-------------------------------------------------------
-// CMX
-//-------------------------------------------------------
-
-STATIC inline void __attribute__((always_inline)) CMX16 ()
+STATIC inline void CMX16 ()
 {
     Int32 = (long) Registers.X.W -
 	    (long) S9xGetWord (OpAddress);
@@ -500,7 +467,7 @@ STATIC inline void __attribute__((always_inline)) CMX16 ()
     SetZN16 ((uint16) Int32);
 }
 
-STATIC inline void __attribute__((always_inline)) CMX8 ()
+STATIC inline void CMX8 ()
 {
     Int16 = (short) Registers.XL -
 	    (short) S9xGetByte (OpAddress);
@@ -508,12 +475,7 @@ STATIC inline void __attribute__((always_inline)) CMX8 ()
     SetZN8 ((uint8) Int16);
 }
 
-
-//-------------------------------------------------------
-// CMY
-//-------------------------------------------------------
-
-STATIC inline void __attribute__((always_inline)) CMY16 ()
+STATIC inline void CMY16 ()
 {
     Int32 = (long) Registers.Y.W -
 	    (long) S9xGetWord (OpAddress);
@@ -521,7 +483,7 @@ STATIC inline void __attribute__((always_inline)) CMY16 ()
     SetZN16 ((uint16) Int32);
 }
 
-STATIC inline void __attribute__((always_inline)) CMY8 ()
+STATIC inline void CMY8 ()
 {
     Int16 = (short) Registers.YL -
 	    (short) S9xGetByte (OpAddress);
@@ -529,12 +491,7 @@ STATIC inline void __attribute__((always_inline)) CMY8 ()
     SetZN8 ((uint8) Int16);
 }
 
-
-//-------------------------------------------------------
-// DEC (A)
-//-------------------------------------------------------
-
-STATIC inline void __attribute__((always_inline)) A_DEC16 ()
+STATIC inline void A_DEC16 ()
 {
 #ifndef SA1_OPCODES
     CPU.Cycles += ONE_CYCLE;
@@ -547,7 +504,7 @@ STATIC inline void __attribute__((always_inline)) A_DEC16 ()
     SetZN16 (Registers.A.W);
 }
 
-STATIC inline void __attribute__((always_inline)) A_DEC8 ()
+STATIC inline void A_DEC8 ()
 {
 #ifndef SA1_OPCODES
     CPU.Cycles += ONE_CYCLE;
@@ -560,12 +517,7 @@ STATIC inline void __attribute__((always_inline)) A_DEC8 ()
     SetZN8 (Registers.AL);
 }
 
-
-//-------------------------------------------------------
-// DEC
-//-------------------------------------------------------
-
-STATIC inline void __attribute__((always_inline)) DEC16 ()
+STATIC inline void DEC16 ()
 {
 #ifndef SA1_OPCODES
     CPU.Cycles += ONE_CYCLE;
@@ -581,7 +533,7 @@ STATIC inline void __attribute__((always_inline)) DEC16 ()
 	SetZN16 (Work16);
 }
 
-STATIC inline void __attribute__((always_inline)) DEC8 ()
+STATIC inline void DEC8 ()
 {
 #ifndef SA1_OPCODES
     CPU.Cycles += ONE_CYCLE;
@@ -595,29 +547,19 @@ STATIC inline void __attribute__((always_inline)) DEC8 ()
     SetZN8 (Work8);
 }
 
-
-//-------------------------------------------------------
-// EOR
-//-------------------------------------------------------
-
-STATIC inline void __attribute__((always_inline)) EOR16 ()
+STATIC inline void EOR16 ()
 {
     Registers.A.W ^= S9xGetWord (OpAddress);
     SetZN16 (Registers.A.W);
 }
 
-STATIC inline void __attribute__((always_inline)) EOR8 ()
+STATIC inline void EOR8 ()
 {
     Registers.AL ^= S9xGetByte (OpAddress);
     SetZN8 (Registers.AL);
 }
 
-
-//-------------------------------------------------------
-// INC (A)
-//-------------------------------------------------------
-
-STATIC inline void __attribute__((always_inline)) A_INC16 ()
+STATIC inline void A_INC16 ()
 {
 #ifndef SA1_OPCODES
     CPU.Cycles += ONE_CYCLE;
@@ -630,7 +572,7 @@ STATIC inline void __attribute__((always_inline)) A_INC16 ()
     SetZN16 (Registers.A.W);
 }
 
-STATIC inline void __attribute__((always_inline)) A_INC8 ()
+STATIC inline void A_INC8 ()
 {
 #ifndef SA1_OPCODES
     CPU.Cycles += ONE_CYCLE;
@@ -643,12 +585,7 @@ STATIC inline void __attribute__((always_inline)) A_INC8 ()
     SetZN8 (Registers.AL);
 }
 
-
-//-------------------------------------------------------
-// INC
-//-------------------------------------------------------
-
-STATIC inline void __attribute__((always_inline)) INC16 ()
+STATIC inline void INC16 ()
 {
 #ifndef SA1_OPCODES
     CPU.Cycles += ONE_CYCLE;
@@ -664,7 +601,7 @@ STATIC inline void __attribute__((always_inline)) INC16 ()
     SetZN16 (Work16);
 }
 
-STATIC inline void __attribute__((always_inline)) INC8 ()
+STATIC inline void INC8 ()
 {
 #ifndef SA1_OPCODES
     CPU.Cycles += ONE_CYCLE;
@@ -678,12 +615,7 @@ STATIC inline void __attribute__((always_inline)) INC8 ()
     SetZN8 (Work8);
 }
 
-
-//-------------------------------------------------------
-// LDA
-//-------------------------------------------------------
-
-STATIC inline void __attribute__((always_inline)) LDA16 ()
+STATIC inline void LDA16 ()
 {
     Registers.A.W = S9xGetWord (OpAddress);
     SetZN16 (Registers.A.W);
@@ -695,7 +627,7 @@ STATIC inline void __attribute__((always_inline)) LDA16Fast (long addr)
     SetZN16 (Registers.A.W);
 }
 
-STATIC inline void __attribute__((always_inline)) LDA8 ()
+STATIC inline void LDA8 ()
 {
     Registers.AL = S9xGetByte (OpAddress);
     SetZN8 (Registers.AL);
@@ -708,11 +640,7 @@ STATIC inline void __attribute__((always_inline)) LDA8Fast (long addr)
 }
 
 
-//-------------------------------------------------------
-// LDX
-//-------------------------------------------------------
-
-STATIC inline void __attribute__((always_inline)) LDX16 ()
+STATIC inline void LDX16 ()
 {
     Registers.X.W = S9xGetWord (OpAddress);
     SetZN16 (Registers.X.W);
@@ -724,7 +652,7 @@ STATIC inline void __attribute__((always_inline)) LDX16Fast (long addr)
     SetZN16 (Registers.X.W);
 }
 
-STATIC inline void __attribute__((always_inline)) LDX8 ()
+STATIC inline void LDX8 ()
 {
     Registers.XL = S9xGetByte (OpAddress);
     SetZN8 (Registers.XL);
@@ -736,12 +664,7 @@ STATIC inline void __attribute__((always_inline)) LDX8Fast (long addr)
     SetZN8 (Registers.XL);
 }
 
-
-//-------------------------------------------------------
-// LDY
-//-------------------------------------------------------
-
-STATIC inline void __attribute__((always_inline)) LDY16 ()
+STATIC inline void LDY16 ()
 {
     Registers.Y.W = S9xGetWord (OpAddress);
     SetZN16 (Registers.Y.W);
@@ -753,7 +676,7 @@ STATIC inline void __attribute__((always_inline)) LDY16Fast (long addr)
     SetZN16 (Registers.Y.W);
 }
 
-STATIC inline void __attribute__((always_inline)) LDY8 ()
+STATIC inline void LDY8 ()
 {
     Registers.YL = S9xGetByte (OpAddress);
     SetZN8 (Registers.YL);
@@ -765,12 +688,7 @@ STATIC inline void __attribute__((always_inline)) LDY8Fast (long addr)
     SetZN8 (Registers.YL);
 }
 
-
-//-------------------------------------------------------
-// LSR (A)
-//-------------------------------------------------------
-
-STATIC inline void __attribute__((always_inline)) A_LSR16 ()
+STATIC inline void A_LSR16 ()
 {
 #ifndef SA1_OPCODES
     CPU.Cycles += ONE_CYCLE;
@@ -780,7 +698,7 @@ STATIC inline void __attribute__((always_inline)) A_LSR16 ()
     SetZN16 (Registers.A.W);
 }
 
-STATIC inline void __attribute__((always_inline)) A_LSR8 ()
+STATIC inline void A_LSR8 ()
 {
 #ifndef SA1_OPCODES
     CPU.Cycles += ONE_CYCLE;
@@ -790,12 +708,7 @@ STATIC inline void __attribute__((always_inline)) A_LSR8 ()
     SetZN8 (Registers.AL);
 }
 
-
-//-------------------------------------------------------
-// LSR
-//-------------------------------------------------------
-
-STATIC inline void __attribute__((always_inline)) LSR16 ()
+STATIC inline void LSR16 ()
 {
 #ifndef SA1_OPCODES
     CPU.Cycles += ONE_CYCLE;
@@ -809,7 +722,7 @@ STATIC inline void __attribute__((always_inline)) LSR16 ()
     SetZN16 (Work16);
 }
 
-STATIC inline void __attribute__((always_inline)) LSR8 ()
+STATIC inline void LSR8 ()
 {
 #ifndef SA1_OPCODES
     CPU.Cycles += ONE_CYCLE;
@@ -821,29 +734,19 @@ STATIC inline void __attribute__((always_inline)) LSR8 ()
     SetZN8 (Work8);
 }
 
-
-//-------------------------------------------------------
-// ORA 
-//-------------------------------------------------------
-
-STATIC inline void __attribute__((always_inline)) ORA16 ()
+STATIC inline void ORA16 ()
 {
     Registers.A.W |= S9xGetWord (OpAddress);
     SetZN16 (Registers.A.W);
 }
 
-STATIC inline void __attribute__((always_inline)) ORA8 ()
+STATIC inline void ORA8 ()
 {
     Registers.AL |= S9xGetByte (OpAddress);
     SetZN8 (Registers.AL);
 }
 
-
-//-------------------------------------------------------
-// ROL (A)
-//-------------------------------------------------------
-
-STATIC inline void __attribute__((always_inline)) A_ROL16 ()
+STATIC inline void A_ROL16 ()
 {
 #ifndef SA1_OPCODES
     CPU.Cycles += ONE_CYCLE;
@@ -854,7 +757,7 @@ STATIC inline void __attribute__((always_inline)) A_ROL16 ()
     SetZN16 ((uint16) Work32);
 }
 
-STATIC inline void __attribute__((always_inline)) A_ROL8 ()
+STATIC inline void A_ROL8 ()
 {
 #ifndef SA1_OPCODES
     CPU.Cycles += ONE_CYCLE;
@@ -867,12 +770,7 @@ STATIC inline void __attribute__((always_inline)) A_ROL8 ()
     SetZN8 ((uint8) Work16);
 }
 
-
-//-------------------------------------------------------
-// ROL
-//-------------------------------------------------------
-
-STATIC inline void __attribute__((always_inline)) ROL16 ()
+STATIC inline void ROL16 ()
 {
 #ifndef SA1_OPCODES
     CPU.Cycles += ONE_CYCLE;
@@ -887,7 +785,7 @@ STATIC inline void __attribute__((always_inline)) ROL16 ()
     SetZN16 ((uint16) Work32);
 }
 
-STATIC inline void __attribute__((always_inline)) ROL8 ()
+STATIC inline void ROL8 ()
 {
 #ifndef SA1_OPCODES
     CPU.Cycles += ONE_CYCLE;
@@ -900,12 +798,7 @@ STATIC inline void __attribute__((always_inline)) ROL8 ()
     SetZN8 ((uint8) Work16);
 }
 
-
-//-------------------------------------------------------
-// ROR (A)
-//-------------------------------------------------------
-
-STATIC inline void __attribute__((always_inline)) A_ROR16 ()
+STATIC inline void A_ROR16 ()
 {
 #ifndef SA1_OPCODES
     CPU.Cycles += ONE_CYCLE;
@@ -918,7 +811,7 @@ STATIC inline void __attribute__((always_inline)) A_ROR16 ()
     SetZN16 ((uint16) Work32);
 }
 
-STATIC inline void __attribute__((always_inline)) A_ROR8 ()
+STATIC inline void A_ROR8 ()
 {
 #ifndef SA1_OPCODES
     CPU.Cycles += ONE_CYCLE;
@@ -930,12 +823,7 @@ STATIC inline void __attribute__((always_inline)) A_ROR8 ()
     SetZN8 ((uint8) Work16);
 }
 
-
-//-------------------------------------------------------
-// ROR
-//-------------------------------------------------------
-
-STATIC inline void __attribute__((always_inline)) ROR16 ()
+STATIC inline void ROR16 ()
 {
 #ifndef SA1_OPCODES
     CPU.Cycles += ONE_CYCLE;
@@ -950,7 +838,7 @@ STATIC inline void __attribute__((always_inline)) ROR16 ()
     SetZN16 ((uint16) Work32);
 }
 
-STATIC inline void __attribute__((always_inline)) ROR8 ()
+STATIC inline void ROR8 ()
 {
 #ifndef SA1_OPCODES
     CPU.Cycles += ONE_CYCLE;
@@ -963,12 +851,7 @@ STATIC inline void __attribute__((always_inline)) ROR8 ()
     SetZN8 ((uint8) Work16);
 }
 
-
-//-------------------------------------------------------
-// SBC
-//-------------------------------------------------------
-
-STATIC inline void __attribute__((always_inline)) SBC16 ()
+STATIC inline void SBC16 ()
 {
     Work16 = S9xGetWord (OpAddress);
 
@@ -1108,7 +991,7 @@ STATIC inline void __attribute__((always_inline)) SBC16Fast (long addr)
     }
 }
 
-STATIC inline void __attribute__((always_inline)) SBC8 ()
+STATIC inline void SBC8 ()
 {
     Work8 = S9xGetByte (OpAddress);
     if (CheckDecimal ())
@@ -1158,6 +1041,7 @@ STATIC inline void __attribute__((always_inline)) SBC8 ()
 	SetZN8 (Registers.AL);
     }
 }
+
 
 STATIC inline void __attribute__((always_inline)) SBC8Fast (long addr)
 {
@@ -1210,11 +1094,8 @@ STATIC inline void __attribute__((always_inline)) SBC8Fast (long addr)
     }
 }
 
-//-------------------------------------------------------
-// STA
-//-------------------------------------------------------
 
-STATIC inline void __attribute__((always_inline)) STA16 ()
+STATIC inline void STA16 ()
 {
     S9xSetWord (Registers.A.W, OpAddress);
 }
@@ -1224,7 +1105,7 @@ STATIC inline void __attribute__((always_inline)) STA16Fast (long addr)
     S9xSetWord (Registers.A.W, addr);
 }
 
-STATIC inline void __attribute__((always_inline)) STA8 ()
+STATIC inline void STA8 ()
 {
     S9xSetByte (Registers.AL, OpAddress);
 }
@@ -1235,11 +1116,7 @@ STATIC inline void __attribute__((always_inline)) STA8Fast (long addr)
 }
 
 
-//-------------------------------------------------------
-// STX
-//-------------------------------------------------------
-
-STATIC inline void __attribute__((always_inline)) STX16 ()
+STATIC inline void STX16 ()
 {
     S9xSetWord (Registers.X.W, OpAddress);
 }
@@ -1249,7 +1126,7 @@ STATIC inline void __attribute__((always_inline)) STX16Fast (long addr)
     S9xSetWord (Registers.X.W, addr);
 }
 
-STATIC inline void __attribute__((always_inline)) STX8 ()
+STATIC inline void STX8 ()
 {
     S9xSetByte (Registers.XL, OpAddress);
 }
@@ -1260,11 +1137,7 @@ STATIC inline void __attribute__((always_inline)) STX8Fast (long addr)
 }
 
 
-//-------------------------------------------------------
-// STY
-//-------------------------------------------------------
-
-STATIC inline void __attribute__((always_inline)) STY16 ()
+STATIC inline void STY16 ()
 {
     S9xSetWord (Registers.Y.W, OpAddress);
 }
@@ -1274,7 +1147,7 @@ STATIC inline void __attribute__((always_inline)) STY16Fast (long addr)
     S9xSetWord (Registers.Y.W, addr);
 }
 
-STATIC inline void __attribute__((always_inline)) STY8 ()
+STATIC inline void STY8 ()
 {
     S9xSetByte (Registers.YL, OpAddress);
 }
@@ -1284,27 +1157,27 @@ STATIC inline void __attribute__((always_inline)) STY8Fast (long addr)
     S9xSetByte (Registers.YL, addr);
 }
 
-
-//-------------------------------------------------------
-// STZ
-//-------------------------------------------------------
-
-STATIC inline void __attribute__((always_inline)) STZ16 ()
+STATIC inline void STZ16 ()
 {
     S9xSetWord (0, OpAddress);
 }
 
-STATIC inline void __attribute__((always_inline)) STZ8 ()
+STATIC inline void STZ16Fast (long addr)
+{
+    S9xSetWord (0, addr);
+}
+
+STATIC inline void STZ8 ()
 {
     S9xSetByte (0, OpAddress);
 }
 
+STATIC inline void STZ8Fast (long addr)
+{
+    S9xSetByte (0, addr);
+}
 
-//-------------------------------------------------------
-// TSB
-//-------------------------------------------------------
-
-STATIC inline void __attribute__((always_inline)) TSB16 ()
+STATIC inline void TSB16 ()
 {
 #ifndef SA1_OPCODES
     CPU.Cycles += ONE_CYCLE;
@@ -1317,8 +1190,7 @@ STATIC inline void __attribute__((always_inline)) TSB16 ()
 	S9xSetByte (Work16&0xFF, OpAddress);
 }
 
-
-STATIC inline void __attribute__((always_inline)) TSB8 ()
+STATIC inline void TSB8 ()
 {
 #ifndef SA1_OPCODES
     CPU.Cycles += ONE_CYCLE;
@@ -1329,12 +1201,7 @@ STATIC inline void __attribute__((always_inline)) TSB8 ()
     S9xSetByte (Work8, OpAddress);
 }
 
-
-//-------------------------------------------------------
-// TRB
-//-------------------------------------------------------
-
-STATIC inline void __attribute__((always_inline)) TRB16 ()
+STATIC inline void TRB16 ()
 {
 #ifndef SA1_OPCODES
     CPU.Cycles += ONE_CYCLE;
@@ -1347,7 +1214,7 @@ STATIC inline void __attribute__((always_inline)) TRB16 ()
 	S9xSetByte (Work16&0xFF, OpAddress);
 }
 
-STATIC inline void __attribute__((always_inline)) TRB8 ()
+STATIC inline void TRB8 ()
 {
 #ifndef SA1_OPCODES
     CPU.Cycles += ONE_CYCLE;

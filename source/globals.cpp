@@ -103,6 +103,7 @@
 #include "sa1.h"
 #include "netplay.h"
 #include "spc7110.h"
+#include "bsx.h"
 
 START_EXTERN_C
 char String[513];
@@ -175,6 +176,10 @@ uint8 A1 = 0, A2 = 0, A3 = 0, A4 = 0, W1 = 0, W2 = 0, W3 = 0, W4 = 0;
 
 
 END_EXTERN_C
+
+// Added from Snes9x v1.52
+struct SBSX BSX;
+
 
 #ifndef ZSNES_FX
 struct FxInit_s SuperFX;
@@ -256,6 +261,7 @@ int EchoBuffer [SOUND_BUFFER_SIZE];
 int FilterTaps [8];
 unsigned long Z = 0;
 int Loop [16];
+uint32	FIRIndex = 0;
 
 uint16 SignExtend [2] = {
     0x00, 0xff00

@@ -280,8 +280,9 @@ void DrawClippedTileOBJ16 (uint32 Tile, uint32 Offset,
 			uint32 StartPixel, uint32 Width,
 			uint32 StartLine, uint32 LineCount);
 
-
-			
+#define DrawTileLater(Tile, Offset, StartLine, LineCount) 
+#define DrawClippedTileLater(Tile, Offset, StartPixel, Width, StartLine, LineCount) 
+	/*		
 #define DrawTileLater(Tile, Offset, StartLine, LineCount) \
 	{ \
 		BG.DrawTileParameters[bg][BG.DrawTileCount[bg]][0] = 0; \
@@ -329,7 +330,7 @@ void DrawClippedTileOBJ16 (uint32 Tile, uint32 Offset,
 		BG.DrawOBJTileLaterParameters[newIndex][5] = StartLine; \
 		BG.DrawOBJTileLaterParameters[newIndex][6] = LineCount; \
 	}
-	
+	*/
 										 
 bool8 S9xGraphicsInit ()
 {
@@ -436,7 +437,7 @@ bool8 S9xGraphicsInit ()
     if (Settings.SixteenBit)
 	GFX.ZPitch >>= 1;
     GFX.Delta = (GFX.SubScreen - GFX.Screen) >> 1;
-	printf ("GFX.Delta = %d\n", GFX.Delta);
+	//printf ("GFX.Delta = %d\n", GFX.Delta);
     GFX.DepthDelta = GFX.SubZBuffer - GFX.ZBuffer;
     //GFX.InfoStringTimeout = 0;
     //GFX.InfoString = NULL;
@@ -470,6 +471,7 @@ bool8 S9xGraphicsInit ()
     }
     S9xFixColourBrightness ();
 
+/*
     if (Settings.SixteenBit)
     {
 	if (!(GFX.X2 = (uint16 *) malloc (sizeof (uint16) * 0x10000)))
@@ -619,13 +621,25 @@ bool8 S9xGraphicsInit ()
 	    }
 	}
     }
-    else
+    else */
     {
 		GFX.X2 = NULL;
 		GFX.ZERO_OR_X2 = NULL;
 		GFX.ZERO = NULL;
     }
 	
+	
+	// Form the RGB5551 to RGBA4 (16-bit) colour lookup table
+	//
+	for (int i = 0; i < 0x10000; i++)
+	{
+		int R = (i >> 12) & 0xf;
+		int G = (i >> 7) & 0xf;
+		int B = (i >> 2) & 0xf;
+		int A = 0xf;
+
+		GFX.ScreenRGB555toRGBA4[i] = (R << 12) | (G << 8) | (B << 4) | A;
+	}
 	
 
     return (TRUE);
@@ -696,7 +710,8 @@ void S9xUpdatePalettes()
 				IPPU.ScreenColors [cgaddr] = finalColor;
 				GFX.PaletteFrame256[0] ++;
 				GFX.PaletteFrame[cgaddr / 16] ++;
-				GFX.PaletteFrame4[(cgaddr & 0x1f) / 4] ++;
+				if (cgaddr < 128)
+					GFX.PaletteFrame4BG[cgaddr / 32][(cgaddr & 0x1f) / 4] ++;
 			}
 		}
 		IPPU.ColorsChanged = false;
@@ -976,7 +991,10 @@ void S9xEndScreenRefresh ()
 	// Update the save SRAM timer logic.
 	if (CPU.SRAMModified)
 	{
-		if (CPU.AutoSaveTimer > 0)
+		// Fixed SRAM saving logic
+		// Can't remember what I used AccumulatedAutoSaveTimer for!
+		//
+		/*if (CPU.AutoSaveTimer > 0)
 		{
 			if (CPU.AccumulatedAutoSaveTimer <= 3600 * 5)  
 			{
@@ -994,13 +1012,12 @@ void S9xEndScreenRefresh ()
 				CPU.AccumulatedAutoSaveTimer = 0;
 				CPU.AutoSaveTimer = 1;
 			}
-		}
-		else
+		}*/
+		if (CPU.AutoSaveTimer == 0)
 		{
-			CPU.AccumulatedAutoSaveTimer = 0;
+			//CPU.AccumulatedAutoSaveTimer = 0;
 			CPU.AutoSaveTimer = Settings.AutoSaveDelay;		// Auto-save SRAM in x frames.
 		}
-		CPU.SRAMModified = false;
 	}
 
 	if (CPU.AutoSaveTimer > 0)
@@ -1009,7 +1026,7 @@ void S9xEndScreenRefresh ()
 		if (CPU.AutoSaveTimer == 0)
 		{
 			S9xAutoSaveSRAM ();
-			CPU.AccumulatedAutoSaveTimer = 0;
+			//CPU.AccumulatedAutoSaveTimer = 0;
 		}		
 	}
 }
@@ -1332,6 +1349,8 @@ void S9xSetupOBJ ()
 #ifdef MK_DEBUG_RTO
 		if(Settings.BGLayering) fprintf(stderr, "normal FirstSprite = %02x\n", PPU.FirstSprite);
 #endif
+		PPU.PriorityDrawFromSprite = PPU.FirstSprite;
+
 		/* normal case */
 		memset(LineOBJ, 0, sizeof(LineOBJ));
 		for(int i=0; i<SNES_HEIGHT_EXTENDED; i++){
@@ -1391,6 +1410,7 @@ void S9xSetupOBJ ()
 #ifdef MK_DEBUG_RTO
 		if(Settings.BGLayering) fprintf(stderr, "FirstSprite+Y\n");
 #endif
+		PPU.PriorityDrawFromSprite = -1;
 
 		/* First, find out which sprites are on which lines */
 		memset(OBJOnLine, 0, sizeof(OBJOnLine));
@@ -2634,6 +2654,7 @@ void DrawBackgroundPriority1 (uint32 BGMode, uint32 bg)
     }
     CHECK_SOUND();
 	*/
+	/*
     if (BGMode == 0)
 		BG.StartPalette = bg << 5;
     else BG.StartPalette = 0;
@@ -2655,7 +2676,7 @@ void DrawBackgroundPriority1 (uint32 BGMode, uint32 bg)
 				BG.DrawTileParameters[bg][i][4], BG.DrawTileParameters[bg][i][5], BG.DrawTileParameters[bg][i][6]);
 		}
 	}
-	
+	*/
 }
 
 
@@ -2674,7 +2695,7 @@ void DrawBackground (uint32 BGMode, uint32 bg, uint8 Z1, uint8 Z2, int priority)
     BG.PaletteMask = PaletteMasks[BGMode][bg];
     BG.DirectColourMode = (BGMode == 3 || BGMode == 4) && bg == 0 &&
 		(GFX.r2130 & 1);
-	BG.DrawTileCount[bg] = 0;
+	//BG.DrawTileCount[bg] = 0;
 	
     if (PPU.BGMosaic [bg] && PPU.Mosaic > 1)
     {

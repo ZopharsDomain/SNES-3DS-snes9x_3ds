@@ -93,6 +93,7 @@
 #include "port.h"
 #include "snes9x.h"
 
+
 struct SGFX{
     // Initialize these variables
     uint8  *Screen;
@@ -156,18 +157,26 @@ struct SGFX{
     
     // Screen colors for Mode 7 Ext BG
     //
-    uint16 ScreenColors128[256];
+    uint16 ScreenRGB555toRGBA4[0x10000];
+    uint16 ScreenColors128[256]; 
 
     // Tracks when the palette was last modified.
     //
     uint32 PaletteFrame256[1] = { 1 };    
     uint32 PaletteFrame[16] = { 1, 1, 1, 1,  1, 1, 1, 1,  1, 1, 1, 1,  1, 1, 1, 1 };    // 16-color BGs / OBJs
-    uint32 PaletteFrame4[16] = { 1, 1, 1, 1,  1, 1, 1, 1,  1, 1, 1, 1,  1, 1, 1, 1 };   // 4-color BGs
+    uint32 PaletteFrame4BG[4][16] = 
+        { 
+            { 1, 1, 1, 1,  1, 1, 1, 1,  1, 1, 1, 1,  1, 1, 1, 1 }, 
+            { 1, 1, 1, 1,  1, 1, 1, 1,  1, 1, 1, 1,  1, 1, 1, 1 }, 
+            { 1, 1, 1, 1,  1, 1, 1, 1,  1, 1, 1, 1,  1, 1, 1, 1 }, 
+            { 1, 1, 1, 1,  1, 1, 1, 1,  1, 1, 1, 1,  1, 1, 1, 1 } 
+        };   // Mode 1 4-color BGs
     
-    // Memory Usage = 4.0 MB    for the frame the palette was changed for the given Tile.
+    // Memory Usage = 0.50 MB    for the frame the palette was changed for the given Tile.
     //
-    uint32 VRAMPaletteFrame[65536][16];
+    uint32 VRAMPaletteFrame[8192][16];
     bool   Use3DSHardware = true;
+
 };
 
 struct SLineData {
@@ -204,10 +213,11 @@ struct SBG
     
     int    Depth;
     
-    bool8 TileFull[4096];
+    //bool8 TileFull[4096];
     
-    uint16 BufferTile16Bit[1][1];
+    //uint16 BufferTile16Bit[1][1];
     
+    /*
     // Memory Usage = 0.5 MB for background parameters
     //
     uint16 DrawTileParameters[4][8192][8];
@@ -218,7 +228,8 @@ struct SBG
     uint16 DrawOBJTileLaterParametersCount;
     uint16 DrawOBJTileLaterIndex[4][65536];
     uint16 DrawOBJTileLaterIndexCount[4];
-    
+    */
+
 };
 
 

@@ -210,6 +210,7 @@ enum {
 #define FRAME_ADVANCE_FLAG  (1 << 9)
 #define DELAYED_NMI_FLAG2   (1 << 10)
 #define IRQ_PENDING_FLAG    (1 << 11)
+#define HALTED_FLAG         (1 << 12)
 
 struct SICPU
 {
@@ -225,6 +226,8 @@ struct SICPU
     uint32 Frame;
     uint32 Scanline;
     uint32 FrameAdvanceCount;
+
+    bool   isInIdleLoop;
 };
 
 struct SCPUState{
@@ -373,6 +376,7 @@ struct SSettings{
     bool8  DisableSampleCaching;
     bool8  DisableMasterVolume;
     bool8  SoundSync;
+    bool8  FakeMuteFix;
     bool8  InterpolatedSound;
     bool8  ThreadSound;
     bool8  Mute;
@@ -428,6 +432,10 @@ struct SSettings{
 	bool8  NoPatch;
 	bool8  ForceInterleaveGD24;
 
+    // Added from Snes9x v1.52
+    bool8  BSXItself;
+    bool8  BSXBootup;
+
 #ifdef DEBUG_MAXCOUNT
     unsigned int MaxCount;
 #endif
@@ -440,11 +448,14 @@ struct SSettings{
     int     HWOBJRenderingMode = 0;     // Default OBJ rendering mode.
                                         // 0 - render direct to main/sub screen by priority
                                         // 1 - render to OBJ layer, then from OBJ layer to main/sub screen
+
+    int     UseFastDSPCore = 0;
 };
 
 struct SSNESGameFixes
 {
     uint8 alienVSpredetorFix;
+    uint8 cuonpaFix;
     uint8 APU_OutPorts_ReturnValueFix;
     uint8 SoundEnvelopeHeightReading2;
     uint8 SRAMInitialValue;
@@ -452,16 +463,31 @@ struct SSNESGameFixes
 	bool8 EchoOnlyOutput;
 
     // Additional game hacks
+    bool   AceONeraeHack;           // Hack the $2131 register to avoid FLUSH_REDRAW when not required.
     int    PaletteCommitLine;       // -1      - default behavior: commit upon change but no flush redraw 
                                     // 0 - 240 - commit the palette at during HBLANK at specific a scan line.
     int    IRQCycleCount;           // Set the IRQCycleCount whenever an IRQ is triggered. Hack for Power Rangers Fighting Edition.
 
     // Speed hacks on specific branch instructions.
     //
+    // Main CPU
     int     SpeedHackCount;
-    uint32  SpeedHackAddress[8];            // Actual 3DS address up to 8 locations.
+    uint32  SpeedHackSNESAddress[8];        // SNES address up to 8 locations.
+    uint8*  SpeedHackAddress[8];            // Actual 3DS address up to 8 locations.
+    int     SpeedHackOriginalBytes[8][4];   // Original bytes for comparison.
     uint8   SpeedHackOriginalOpcode[8];     // Original opcode.
     int     SpeedHackCycles[8];             // cycles to add
+
+    // SA1 CPU
+    int     SpeedHackSA1Count;
+    uint32  SpeedHackSA1SNESAddress[8];        // SNES address up to 8 locations.
+    uint8*  SpeedHackSA1Address[8];            // Actual 3DS address up to 8 locations.
+    int     SpeedHackSA1OriginalBytes[8][4];   // Original bytes for comparison.
+    uint8   SpeedHackSA1OriginalOpcode[8];     // Original opcode.
+
+    //int     SpeedHackSA1AddressCount;       // Total number of SA1 PC addresses
+    //uint32  SpeedHackSA1Address[8];         // Allow the speed hack to skip cycles only if the SA1 PC addresses are in this list.
+    //int     SpeedHackPatchTryCount;
 };
 
 START_EXTERN_C

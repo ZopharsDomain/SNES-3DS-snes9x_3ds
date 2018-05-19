@@ -90,8 +90,6 @@
 #ifndef _CPUADDR_H_
 #define _CPUADDR_H_
 
-//EXTERN_C long OpAddress;
-#define OpAddress OCPU.FastOpAddress
 
 typedef enum {
     NONE = 0,
@@ -100,11 +98,6 @@ typedef enum {
     MODIFY = 3,
     JUMP = 4
 } AccessMode;
-
-
-// -------------------------------------------------------------
-// Immediate
-// -------------------------------------------------------------
 
 STATIC inline void __attribute__((always_inline)) Immediate8 (AccessMode a)
 {
@@ -132,10 +125,6 @@ STATIC inline long __attribute__((always_inline)) Immediate16Fast (AccessMode a)
     return addr;
 }
 
-// -------------------------------------------------------------
-// Relative
-// -------------------------------------------------------------
-
 STATIC inline void __attribute__((always_inline)) Relative (AccessMode a)
 {
     Int8 = *CPU.PC++;
@@ -154,11 +143,6 @@ STATIC inline long __attribute__((always_inline)) RelativeFast (AccessMode a)
     return ((int) (CPU.PC - CPU.PCBase) + i8) & 0xffff;
 }
 
-
-// -------------------------------------------------------------
-// Relative Long
-// -------------------------------------------------------------
-
 STATIC inline void __attribute__((always_inline)) RelativeLong (AccessMode a)
 {
 #ifdef FAST_LSB_WORD_ACCESS
@@ -173,11 +157,6 @@ STATIC inline void __attribute__((always_inline)) RelativeLong (AccessMode a)
     OpAddress += (CPU.PC - CPU.PCBase);
     OpAddress &= 0xffff;
 }
-
-
-// -------------------------------------------------------------
-// Absolute Indexed Indirect
-// -------------------------------------------------------------
 
 STATIC inline void __attribute__((always_inline)) AbsoluteIndexedIndirect (AccessMode a)
 {
@@ -194,11 +173,6 @@ STATIC inline void __attribute__((always_inline)) AbsoluteIndexedIndirect (Acces
     OpAddress = S9xGetWord (ICPU.ShiftedPB + OpAddress);
     if(a&READ) OpenBus = (uint8)(OpAddress>>8);
 }
-
-
-// -------------------------------------------------------------
-// Absolute Indirect Long
-// -------------------------------------------------------------
 
 STATIC inline void __attribute__((always_inline)) AbsoluteIndirectLong (AccessMode a)
 {
@@ -220,11 +194,6 @@ STATIC inline void __attribute__((always_inline)) AbsoluteIndirectLong (AccessMo
     }
 }
 
-
-// -------------------------------------------------------------
-// Absolute Indirect
-// -------------------------------------------------------------
-
 STATIC inline void __attribute__((always_inline)) AbsoluteIndirect (AccessMode a)
 {
 #ifdef FAST_LSB_WORD_ACCESS
@@ -242,11 +211,6 @@ STATIC inline void __attribute__((always_inline)) AbsoluteIndirect (AccessMode a
     if(a&READ) OpenBus = (uint8)(OpAddress>>8);
     OpAddress += ICPU.ShiftedPB;
 }
-
-
-// -------------------------------------------------------------
-// Absolute
-// -------------------------------------------------------------
 
 STATIC inline void __attribute__((always_inline)) Absolute (AccessMode a)
 {
@@ -307,11 +271,6 @@ STATIC inline long __attribute__((always_inline)) AbsoluteFastWrite ()
     return addr;
 }
 
-
-// -------------------------------------------------------------
-// Absolute Long
-// -------------------------------------------------------------
-
 STATIC inline void __attribute__((always_inline)) AbsoluteLong (AccessMode a)
 {
 #ifdef FAST_LSB_WORD_ACCESS
@@ -325,10 +284,6 @@ STATIC inline void __attribute__((always_inline)) AbsoluteLong (AccessMode a)
     CPU.Cycles += CPU.MemSpeedx2 + CPU.MemSpeed;
 #endif
 }
-
-// -------------------------------------------------------------
-// Direct
-// -------------------------------------------------------------
 
 STATIC inline void __attribute__((always_inline)) Direct(AccessMode a)
 {
@@ -372,10 +327,6 @@ STATIC inline long __attribute__((always_inline)) DirectFastWrite()
 //    if (Registers.DL != 0) CPU.Cycles += ONE_CYCLE;
 }
 
-// -------------------------------------------------------------
-// Direct Indirect Indexed
-// -------------------------------------------------------------
-
 STATIC inline void __attribute__((always_inline)) DirectIndirectIndexed (AccessMode a)
 {
     OpenBus = *CPU.PC;
@@ -393,9 +344,23 @@ STATIC inline void __attribute__((always_inline)) DirectIndirectIndexed (AccessM
     // XXX: else Add one cycle if crosses page boundary
 }
 
-// -------------------------------------------------------------
-// Direct Indirect Indexed Long
-// -------------------------------------------------------------
+STATIC inline long __attribute__((always_inline)) DirectIndirectIndexedFast (AccessMode a)
+{
+    OpenBus = *CPU.PC;
+    long addr = (*CPU.PC++ + Registers.D.W) & 0xffff;
+#ifndef SA1_OPCODES
+    CPU_Cycles += CPU.MemSpeed;
+#endif
+
+    addr = S9xGetWord (addr);
+    if(a&READ) OpenBus = (uint8)(addr>>8);
+    addr += ICPU.ShiftedDB + Registers.Y.W;
+
+//    if (Registers.DL != 0) CPU_Cycles += ONE_CYCLE;
+    // XXX: always add one if STA
+    // XXX: else Add one cycle if crosses page boundary
+    return addr;
+}
 
 STATIC inline void __attribute__((always_inline)) DirectIndirectIndexedLong (AccessMode a)
 {
@@ -412,10 +377,6 @@ STATIC inline void __attribute__((always_inline)) DirectIndirectIndexedLong (Acc
     }
 //    if (Registers.DL != 0) CPU.Cycles += ONE_CYCLE;
 }
-
-// -------------------------------------------------------------
-// Direct Indexed Indirect
-// -------------------------------------------------------------
 
 STATIC inline void __attribute__((always_inline)) DirectIndexedIndirect(AccessMode a)
 {
@@ -437,9 +398,26 @@ STATIC inline void __attribute__((always_inline)) DirectIndexedIndirect(AccessMo
 #endif
 }
 
-// -------------------------------------------------------------
-// Direct Indexed X
-// -------------------------------------------------------------
+STATIC inline long __attribute__((always_inline)) DirectIndexedIndirectFast (AccessMode a)
+{
+    OpenBus = *CPU.PC;
+    long addr = (*CPU.PC++ + Registers.D.W + Registers.X.W) & 0xffff;
+#ifndef SA1_OPCODES
+    CPU_Cycles += CPU.MemSpeed;
+#endif
+
+    addr = S9xGetWord (addr);
+    if(a&READ) OpenBus = (uint8)(addr>>8);
+    addr += ICPU.ShiftedDB;
+
+#ifndef SA1_OPCODES
+//    if (Registers.DL != 0)
+//	CPU_Cycles += TWO_CYCLES;
+//    else
+	CPU_Cycles += ONE_CYCLE;
+#endif
+    return addr;
+}
 
 STATIC inline void __attribute__((always_inline)) DirectIndexedX (AccessMode a)
 {
@@ -459,9 +437,24 @@ STATIC inline void __attribute__((always_inline)) DirectIndexedX (AccessMode a)
 #endif
 }
 
-// -------------------------------------------------------------
-// Direct Indexed Y
-// -------------------------------------------------------------
+STATIC inline long __attribute__((always_inline)) DirectIndexedXFast (AccessMode a)
+{
+	if(a&READ) OpenBus = *CPU.PC;
+    long addr = (*CPU.PC++ + Registers.D.W + Registers.X.W);
+    addr &= CheckEmulation() ? 0xff : 0xffff;
+
+#ifndef SA1_OPCODES
+    CPU_Cycles += CPU.MemSpeed;
+#endif
+
+#ifndef SA1_OPCODES
+//    if (Registers.DL != 0)
+//	CPU_Cycles += TWO_CYCLES;
+//    else
+	CPU_Cycles += ONE_CYCLE;
+#endif
+    return addr;
+}
 
 STATIC inline void __attribute__((always_inline)) DirectIndexedY (AccessMode a)
 {
@@ -480,9 +473,23 @@ STATIC inline void __attribute__((always_inline)) DirectIndexedY (AccessMode a)
 #endif
 }
 
-// -------------------------------------------------------------
-// Absolute Indexed X
-// -------------------------------------------------------------
+STATIC inline long __attribute__((always_inline)) DirectIndexedYFast (AccessMode a)
+{
+	if(a&READ) OpenBus = *CPU.PC;
+    long addr = (*CPU.PC++ + Registers.D.W + Registers.Y.W);
+    addr &= CheckEmulation() ? 0xff : 0xffff;
+#ifndef SA1_OPCODES
+    CPU.Cycles += CPU.MemSpeed;
+#endif
+
+#ifndef SA1_OPCODES
+//    if (Registers.DL != 0)
+//	CPU.Cycles += TWO_CYCLES;
+//    else
+	CPU.Cycles += ONE_CYCLE;
+#endif
+    return addr;
+}
 
 STATIC inline void __attribute__((always_inline)) AbsoluteIndexedX (AccessMode a)
 {
@@ -519,11 +526,6 @@ STATIC inline long __attribute__((always_inline)) AbsoluteIndexedXFast (AccessMo
     return addr;
 }
 
-
-// -------------------------------------------------------------
-// Absolute Indexed Y
-// -------------------------------------------------------------
-
 STATIC inline void __attribute__((always_inline)) AbsoluteIndexedY (AccessMode a)
 {
 #ifdef FAST_LSB_WORD_ACCESS
@@ -559,11 +561,6 @@ STATIC inline long __attribute__((always_inline)) AbsoluteIndexedYFast (AccessMo
     return addr;
 }
 
-
-// -------------------------------------------------------------
-// Absolute Long Indexed X
-// -------------------------------------------------------------
-
 STATIC inline void __attribute__((always_inline)) AbsoluteLongIndexedX (AccessMode a)
 {
 #ifdef FAST_LSB_WORD_ACCESS
@@ -577,11 +574,6 @@ STATIC inline void __attribute__((always_inline)) AbsoluteLongIndexedX (AccessMo
     CPU.Cycles += CPU.MemSpeedx2 + CPU.MemSpeed;
 #endif
 }
-
-
-// -------------------------------------------------------------
-// Direct Indirect
-// -------------------------------------------------------------
 
 STATIC inline void __attribute__((always_inline)) DirectIndirect (AccessMode a)
 {
@@ -597,9 +589,20 @@ STATIC inline void __attribute__((always_inline)) DirectIndirect (AccessMode a)
 //    if (Registers.DL != 0) CPU.Cycles += ONE_CYCLE;
 }
 
-// -------------------------------------------------------------
-// Direct Indirect Long
-// -------------------------------------------------------------
+STATIC inline long __attribute__((always_inline)) DirectIndirectFast (AccessMode a)
+{
+    OpenBus = *CPU.PC;
+    long addr = (*CPU.PC++ + Registers.D.W) & 0xffff;
+#ifndef SA1_OPCODES
+    CPU_Cycles += CPU.MemSpeed;
+#endif
+    addr = S9xGetWord (addr);
+    if(a&READ) OpenBus = (uint8)(addr>>8);
+    addr += ICPU.ShiftedDB;
+
+//    if (Registers.DL != 0) CPU_Cycles += ONE_CYCLE;
+    return addr;
+}
 
 STATIC inline void __attribute__((always_inline)) DirectIndirectLong (AccessMode a)
 {
@@ -616,11 +619,6 @@ STATIC inline void __attribute__((always_inline)) DirectIndirectLong (AccessMode
 //    if (Registers.DL != 0) CPU.Cycles += ONE_CYCLE;
 }
 
-
-// -------------------------------------------------------------
-// Stack Relative
-// -------------------------------------------------------------
-
 STATIC inline void __attribute__((always_inline)) StackRelative (AccessMode a)
 {
     if(a&READ) OpenBus = *CPU.PC;
@@ -630,11 +628,6 @@ STATIC inline void __attribute__((always_inline)) StackRelative (AccessMode a)
     CPU.Cycles += ONE_CYCLE;
 #endif
 }
-
-
-// -------------------------------------------------------------
-// Stack Relative Indirect Indexed
-// -------------------------------------------------------------
 
 STATIC inline void __attribute__((always_inline)) StackRelativeIndirectIndexed (AccessMode a)
 {

@@ -114,6 +114,9 @@
 #include "sdd1.h"
 #include "spc7110.h"
 #include "movie.h"
+#include "bufferedfilewriter.h"
+
+#include "blargsnes_spc700/dsp.h"
 
 extern uint8 *SRAM;
 
@@ -525,9 +528,9 @@ static FreezeData SnapS7RTC [] = {
 static char ROMFilename [_MAX_PATH];
 //static char SnapshotFilename [_MAX_PATH];
 
-void FreezeStruct (STREAM stream, char *name, void *base, FreezeData *fields,
+void FreezeStruct (BufferedFileWriter& stream, char *name, void *base, FreezeData *fields,
 				   int num_fields);
-void FreezeBlock (STREAM stream, char *name, uint8 *block, int size);
+void FreezeBlock (BufferedFileWriter& stream, char *name, uint8 *block, int size);
 
 int UnfreezeStruct (STREAM stream, char *name, void *base, FreezeData *fields,
 					int num_fields);
@@ -546,12 +549,15 @@ bool8 Snapshot (const char *filename)
 
 bool8 S9xFreezeGame (const char *filename)
 {
-    STREAM stream = NULL;
-	
-    if (S9xOpenSnapshotFile (filename, FALSE, &stream))
+    BufferedFileWriter stream;
+    if (stream.open(filename, "wb"))
     {
+		S9xPrepareSoundForSnapshotSave (FALSE);
+		
 		S9xFreezeToStream (stream);
-		S9xCloseSnapshotFile (stream);
+		stream.close();
+
+		S9xPrepareSoundForSnapshotSave (TRUE);
 
 		/*if(S9xMovieActive())
 		{
@@ -627,7 +633,7 @@ bool8 S9xUnfreezeGame (const char *filename)
     return (FALSE);
 }
 
-void S9xFreezeToStream (STREAM stream)
+void S9xFreezeToStream (BufferedFileWriter& stream)
 {
     char buffer [1024];
     int i;
@@ -646,11 +652,23 @@ void S9xFreezeToStream (STREAM stream)
 		SoundData.channels [i].previous16 [0] = (int16) SoundData.channels [i].previous [0];
 		SoundData.channels [i].previous16 [1] = (int16) SoundData.channels [i].previous [1];
     }
-    sprintf (buffer, "%s:%04d\n", SNAPSHOT_MAGIC, SNAPSHOT_VERSION);
-    WRITE_STREAM (buffer, strlen (buffer), stream);
-    sprintf (buffer, "NAM:%06d:%s%c", strlen (Memory.ROMFilename) + 1,
+
+	// If the BlargSNES DSP core is used, then we will want to save the active state of
+	// its DSP channels. That way, when this save state is reloaded we can K-ON those
+	// channels.
+	//
+	if (Settings.UseFastDSPCore)
+	{
+		for (int i = 0; i < 8; i++)
+		{
+			SoundData.channels[i].state = channels[i].active ? SOUND_BLARGCORE_ACTIVE : SOUND_SILENT;
+		}
+	}
+    int printed = sprintf (buffer, "%s:%04d\n", SNAPSHOT_MAGIC, SNAPSHOT_VERSION);
+    stream.write(buffer, printed);
+    printed = sprintf (buffer, "NAM:%06d:%s%c", strlen (Memory.ROMFilename) + 1,
 		Memory.ROMFilename, 0);
-    WRITE_STREAM (buffer, strlen (buffer) + 1, stream);
+    stream.write(buffer, printed);
     FreezeStruct (stream, "CPU", &CPU, SnapCPU, COUNT (SnapCPU));
     FreezeStruct (stream, "REG", &Registers, SnapRegisters, COUNT (SnapRegisters));
     FreezeStruct (stream, "PPU", &PPU, SnapPPU, COUNT (SnapPPU));
@@ -682,6 +700,7 @@ void S9xFreezeToStream (STREAM stream)
 	
 	if (Settings.SPC7110)
     {
+		S9xSpc7110PreSaveState();
 		FreezeStruct (stream, "SP7", &s7r, SnapSPC7110, COUNT (SnapSPC7110));
     }
 	if(Settings.SPC7110RTC)
@@ -711,6 +730,8 @@ void S9xFreezeToStream (STREAM stream)
 		S9xSuperFXPostSaveState ();
 #endif
 }
+
+extern u8 DSP_MEM[0x100];
 
 int S9xUnfreezeFromStream (STREAM stream)
 {
@@ -792,7 +813,10 @@ int S9xUnfreezeFromStream (STREAM stream)
 		if ((result = UnfreezeStructCopy (stream, "SP7", &local_spc, SnapSPC7110, COUNT(SnapSPC7110))) != SUCCESS)
 		{
 			if(Settings.SPC7110)
+			{
+				S9xSpc7110PostLoadState();
 				break;
+			}
 		}
 		if ((result = UnfreezeStructCopy (stream, "RTC", &local_spc_rtc, SnapS7RTC, COUNT (SnapS7RTC))) != SUCCESS)
 		{
@@ -903,7 +927,7 @@ int S9xUnfreezeFromStream (STREAM stream)
 			S9xUpdateRTC();
 		}
 
-		S9xFixSoundAfterSnapshotLoad ();
+		S9xFixSoundAfterSnapshotLoad (1);
 
 		uint8 hdma_byte = Memory.FillRAM[0x420c];
 		S9xSetCPU(hdma_byte, 0x420c);
@@ -918,7 +942,40 @@ int S9xUnfreezeFromStream (STREAM stream)
 		// Copy the DSP data to the copy used for reading.
 		//
 		for (int i = 0; i < 0x80; i++)
+		{
 			IAPU.DSPCopy[i] = APU.DSP[i];
+		}
+
+		// Determine whether our save state is meant for Snes9x DSP 
+		// by inspecting the channel's state
+		// 
+		bool saveStateForSnes9xDSPCore = true;
+		for (int ch = 0; ch < 8; ch++)
+			if (SoundData.channels[ch].state == SOUND_BLARGCORE_ACTIVE)
+			{
+				saveStateForSnes9xDSPCore = false;
+				break;
+			}
+
+		// If the save is for the original Snes9x DSP core and the user
+		// has chosen to use the Snes9X DSP core, then the
+		// SoundData.channels state loaded doesn't have to be re-initialized.
+		//
+		// In all other cases, the BlargSNES DSP or the Snes9x DSP must be 
+		// properly initialized.
+		//
+		if (saveStateForSnes9xDSPCore)
+		{
+			if (Settings.UseFastDSPCore)
+				S9xCopyDSPParamters(true);
+		}
+		else
+		{
+			if (Settings.UseFastDSPCore)
+				S9xCopyDSPParamters(true);
+			else
+				S9xCopyDSPParamters(false);
+		}
 
 		ICPU.ShiftedPB = Registers.PB << 16;
 		ICPU.ShiftedDB = Registers.DB << 16;
@@ -977,7 +1034,7 @@ int FreezeSize (int size, int type)
     }
 }
 
-void FreezeStruct (STREAM stream, char *name, void *base, FreezeData *fields,
+void FreezeStruct (BufferedFileWriter& stream, char *name, void *base, FreezeData *fields,
 				   int num_fields)
 {
     // Work out the size of the required block
@@ -1036,7 +1093,7 @@ void FreezeStruct (STREAM stream, char *name, void *base, FreezeData *fields,
 			}
 			break;
 			case uint8_ARRAY_V:
-				memmove (ptr, (uint8 *) base + fields [i].offset, fields [i].size);
+				memcpy (ptr, (uint8 *) base + fields [i].offset, fields [i].size);
 				ptr += fields [i].size;
 				break;
 			case uint16_ARRAY_V:
@@ -1064,13 +1121,12 @@ void FreezeStruct (STREAM stream, char *name, void *base, FreezeData *fields,
     delete[] block;
 }
 
-void FreezeBlock (STREAM stream, char *name, uint8 *block, int size)
+void FreezeBlock (BufferedFileWriter& stream, char *name, uint8 *block, int size)
 {
-    char buffer [512];
-    sprintf (buffer, "%s:%06d:", name, size);
-    WRITE_STREAM (buffer, strlen (buffer), stream);
-    WRITE_STREAM (block, size, stream);
-    
+    char buffer[16];
+    int printed = sprintf(buffer, "%s:%06d:", name, size);
+    stream.write(buffer, printed);
+    stream.write(block, size);
 }
 
 int UnfreezeStruct (STREAM stream, char *name, void *base, FreezeData *fields,
@@ -1139,7 +1195,7 @@ int UnfreezeStruct (STREAM stream, char *name, void *base, FreezeData *fields,
 			}
 			break;
 			case uint8_ARRAY_V:
-				memmove ((uint8 *) base + fields [i].offset, ptr, fields [i].size);
+				memcpy ((uint8 *) base + fields [i].offset, ptr, fields [i].size);
 				ptr += fields [i].size;
 				break;
 			case uint16_ARRAY_V:
@@ -1807,7 +1863,7 @@ fread(&temp, 1, 4, fs);
 		S9xFixColourBrightness ();
 		IPPU.RenderThisFrame = FALSE;
 		
-		S9xFixSoundAfterSnapshotLoad ();
+		S9xFixSoundAfterSnapshotLoad (1);
 		ICPU.ShiftedPB = Registers.PB << 16;
 		ICPU.ShiftedDB = Registers.DB << 16;
 		S9xSetPCBase (ICPU.ShiftedPB + Registers.PC);

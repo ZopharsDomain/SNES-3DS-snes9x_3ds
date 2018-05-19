@@ -99,9 +99,11 @@
 #include "screenshot.h"
 #include "cliphw.h"
 
+#include <3ds.h>
 #include "3dsopt.h"
 #include "3dsgpu.h"
-#include <3ds.h>
+#include "3dsimpl_tilecache.h"
+#include "3dsimpl_gpu.h"
 
 #define M7 19
 #define M8 19
@@ -144,6 +146,13 @@ extern uint8  Mode7Depths [2];
  (GFX.r212d & (1 << N)) && \
  !(PPU.BG_Forced & (1 << (N))))
 
+#define ON_SUB_PSEUDO(N) \
+ ((GFX.r212d & (1 << N)))
+
+#define ON_SUB_HIRES(N) \
+((GFX.r212d & (1 << N)) && \
+ !(PPU.BG_Forced & (1 << (N))))
+
 #define ANYTHING_ON_SUB \
 ((GFX.r2130 & 0x30) != 0x30 && \
  (GFX.r2130 & 2) && \
@@ -152,54 +161,12 @@ extern uint8  Mode7Depths [2];
 #define ADD_OR_SUB_ON_ANYTHING \
 (GFX.r2131 & 0x3f)
 
+#define ALPHA_DEFAULT		 		0x0000
+#define ALPHA_ZERO 					0x6000 
+#define ALPHA_0_5 					0x2000 
+#define ALPHA_1_0 					0x4000 
 
-
-#define DrawTileLater(Tile, Offset, StartLine, LineCount) \
-	{ \
-		BG.DrawTileParameters[bg][BG.DrawTileCount[bg]][0] = 0; \
-		BG.DrawTileParameters[bg][BG.DrawTileCount[bg]][1] = Tile; \
-		BG.DrawTileParameters[bg][BG.DrawTileCount[bg]][2] = Offset; \
-		BG.DrawTileParameters[bg][BG.DrawTileCount[bg]][3] = StartLine; \
-		BG.DrawTileParameters[bg][BG.DrawTileCount[bg]][4] = LineCount; \
-		BG.DrawTileCount[bg]++; \
-	}
-
-
-#define DrawFullTileLater(Tile, ScreenX, ScreenY, StartLine, LineCount) \
-	{ \
-		BG.DrawTileParameters[bg][BG.DrawTileCount[bg]][0] = 2; \
-		BG.DrawTileParameters[bg][BG.DrawTileCount[bg]][1] = Tile; \
-		BG.DrawTileParameters[bg][BG.DrawTileCount[bg]][2] = ScreenX; \
-		BG.DrawTileParameters[bg][BG.DrawTileCount[bg]][3] = ScreenY; \
-		BG.DrawTileParameters[bg][BG.DrawTileCount[bg]][4] = StartLine; \
-		BG.DrawTileParameters[bg][BG.DrawTileCount[bg]][5] = LineCount; \
-		BG.DrawTileCount[bg]++; \
-	}
-
-#define DrawClippedTileLater(Tile, Offset, StartPixel, Width, StartLine, LineCount) \
-	{ \
-		BG.DrawTileParameters[bg][BG.DrawTileCount[bg]][0] = 1; \
-		BG.DrawTileParameters[bg][BG.DrawTileCount[bg]][1] = Tile; \
-		BG.DrawTileParameters[bg][BG.DrawTileCount[bg]][2] = Offset; \
-		BG.DrawTileParameters[bg][BG.DrawTileCount[bg]][3] = StartPixel; \
-		BG.DrawTileParameters[bg][BG.DrawTileCount[bg]][4] = Width; \
-		BG.DrawTileParameters[bg][BG.DrawTileCount[bg]][5] = StartLine; \
-		BG.DrawTileParameters[bg][BG.DrawTileCount[bg]][6] = LineCount; \
-		BG.DrawTileCount[bg]++; \
-	}
-
-#define DrawOBJTileLater(priority, Tile, ScreenX, ScreenY, TextureYOffset) \
-	{ \
-		int newIndex = BG.DrawOBJTileLaterParametersCount++; \
-		int newBGIndex = BG.DrawOBJTileLaterIndexCount[priority]++; \
-		BG.DrawOBJTileLaterIndex[priority][newBGIndex] = newIndex; \
-		BG.DrawOBJTileLaterParameters[newIndex][0] = priority; \
-		BG.DrawOBJTileLaterParameters[newIndex][1] = Tile; \
-		BG.DrawOBJTileLaterParameters[newIndex][2] = ScreenX; \
-		BG.DrawOBJTileLaterParameters[newIndex][3] = ScreenY; \
-		BG.DrawOBJTileLaterParameters[newIndex][4] = TextureYOffset; \
-	}
-
+bool layerDrawn[10];
 
 
 //-------------------------------------------------------------------
@@ -207,10 +174,15 @@ extern uint8  Mode7Depths [2];
 //-------------------------------------------------------------------
 void S9xDrawBackdropHardware(bool sub, int depth)
 {
+	t3dsStartTiming(25, "DrawBKClr");
     uint32 starty = GFX.StartY;
     uint32 endy = GFX.EndY;
 
+	gpu3dsSetTextureEnvironmentReplaceColor();
 	gpu3dsDisableStencilTest();
+	gpu3dsDisableDepthTest();
+	gpu3dsDisableAlphaTest();
+	
 	if (!sub)
 	{
 		// Performance:
@@ -234,7 +206,7 @@ void S9xDrawBackdropHardware(bool sub, int depth)
 			}
 			else
 			{
-				//printf ("Backdrop %04x, Y:%d-%d, 2130:%02x\n", backColor, IPPU.BackdropColorSections.Section[i].StartY, IPPU.BackdropColorSections.Section[i].EndY, GFX.r2130);
+				//printf ("Backdrop %04x, Y:%d-%d, 2130:%02x, d=%4x\n", backColor, IPPU.BackdropColorSections.Section[i].StartY, IPPU.BackdropColorSections.Section[i].EndY, GFX.r2130, depth);
 				gpu3dsAddRectangleVertexes(
 					0, IPPU.BackdropColorSections.Section[i].StartY + depth, 
 					256, IPPU.BackdropColorSections.Section[i].EndY + 1 + depth, 0, backColor);
@@ -302,7 +274,11 @@ void S9xDrawBackdropHardware(bool sub, int depth)
 			// This fixes Chrono Trigger's Leene' Square dark floor and
 			// Secret of Mana's dark grass.
 			//
-			if (backColor == 0xff) backColor = 0;
+			if (backColor == 0xff) 
+			{
+				backColor = 0;
+				depth = depth & 0xfff;		// removes the alpha component
+			}
 			
 			gpu3dsAddRectangleVertexes(
 				0, IPPU.FixedColorSections.Section[i].StartY + depth, 
@@ -312,7 +288,7 @@ void S9xDrawBackdropHardware(bool sub, int depth)
 		
 		gpu3dsDrawVertexes();
 	}
-
+	t3dsEndTiming(25);
 
 }
 
@@ -594,6 +570,18 @@ inline bool S9xComputeAndEnableStencilFunction(int layer, int subscreen)
 	{
 		//printf ("  ES: 2130: %x\n", GFX.r2130);
 
+		// For modes 5 and 6 (hi-res) mode, 
+		// we will always blend the two screens regardless of
+		// the color math because in a real TV, it's not the
+		// SNES doing color math, but the TV blending the 
+		// hi-res screen making it look like color math.
+		//
+		if (PPU.BGMode == 5 || PPU.BGMode == 6)
+		{
+			gpu3dsDisableStencilTest();
+			return true;			
+		}
+
 		// Can we do this outside? 
 		if (layer == 5 && subscreen == 0)
 		{
@@ -701,155 +689,6 @@ inline bool S9xComputeAndEnableStencilFunction(int layer, int subscreen)
 
 int curBG = 0;
 
-//-------------------------------------------------------------------
-// Draw a clipped BG tile using 3D hardware.
-//-------------------------------------------------------------------
-inline void __attribute__((always_inline)) S9xDrawBGClippedTileHardwareInline (
-    int tileSize, int tileShift, int paletteShift, int paletteMask, int startPalette, bool directColourMode,
-	int32 snesTile, int32 screenOffset,
-	int32 startX, int32 width,
-	int32 startLine, int32 height)
-{
-	int texturePos = 0;
-
-	// Prepare tile for rendering
-	//
-    uint8 *pCache;
-    uint16 *pCache16;
-
-    uint32 TileAddr = BG.TileAddress + ((snesTile & 0x3ff) << tileShift);
-
-	// Bug fix: overflow in Dragon Ball Budoten 3 
-	// (this was accidentally removed while optimizing for this 3DS port)
-	TileAddr &= 0xff00ffff;		// hope the compiler generates a BIC instruction.
-
-    uint32 TileNumber;
-    pCache = &BG.Buffer[(TileNumber = (TileAddr >> tileShift)) << 6];
-
-	//if (screenOffset == 0)
-	//	printf ("  tile: %d\n", TileNumber);
-
-	//if ((snesTile & 0x3ff) == 0 && curBG == 2)
-	//	printf ("* %d,%d BG%d TileAddr=%4x Buf=%d\n", screenOffset & 0xff, screenOffset >> 8, curBG, TileAddr, BG.Buffered[TileNumber]);
-
-    if (!BG.Buffered [TileNumber])
-    {
-	    BG.Buffered[TileNumber] = S9xConvertTileTo8Bit (pCache, TileAddr);
-        if (BG.Buffered [TileNumber] == BLANK_TILE)
-            return;
-
-        GFX.VRAMPaletteFrame[TileAddr][0] = 0;
-        GFX.VRAMPaletteFrame[TileAddr][1] = 0;
-        GFX.VRAMPaletteFrame[TileAddr][2] = 0;
-        GFX.VRAMPaletteFrame[TileAddr][3] = 0;
-        GFX.VRAMPaletteFrame[TileAddr][4] = 0;
-        GFX.VRAMPaletteFrame[TileAddr][5] = 0;
-        GFX.VRAMPaletteFrame[TileAddr][6] = 0;
-        GFX.VRAMPaletteFrame[TileAddr][7] = 0;
-    }
-
-	//if (screenOffset == 0)
-	//	printf ("  buffered: %d\n", BG.Buffered [TileNumber]);
-
-    if (BG.Buffered [TileNumber] == BLANK_TILE)
-	    return;
-
-	/*if ((snesTile & 0x3ff) == 0 && curBG == 2)
-	{
-		for (int i = 0; i < 64; i++)
-		{
-			printf ("%2x", pCache[i]);
-			if (i % 8 == 7)
-				printf ("\n");
-		}
-	}*/
-
-    uint32 l;
-    uint8 pal;
-    if (directColourMode)
-    {
-        if (IPPU.DirectColourMapsNeedRebuild)
-            S9xBuildDirectColourMaps ();
-        pal = (snesTile >> 10) & paletteMask;
-		GFX.ScreenColors = DirectColourMaps [pal];
-		texturePos = cacheGetTexturePositionFast(TileAddr, pal);
-
-		//printf ("  TIDM addr:%x pal:%d %d\n", TileAddr, pal, texturePos);
-
-        if (GFX.VRAMPaletteFrame[TileAddr][pal] != GFX.PaletteFrame[pal + startPalette / 16])
-        {
-			texturePos = cacheGetSwapTexturePositionForAltFrameFast(TileAddr, pal);
-            GFX.VRAMPaletteFrame[TileAddr][pal] = GFX.PaletteFrame[pal + startPalette / 16];
-
-			gpu3dsCacheToTexturePosition(pCache, GFX.ScreenColors, texturePos);
-        }
-    }
-    else
-    {
-
-        pal = (snesTile >> 10) & paletteMask;
-        GFX.ScreenColors = &IPPU.ScreenColors [(pal << paletteShift) + startPalette];
-		texturePos = cacheGetTexturePositionFast(TileAddr, pal);
-		//printf ("%d\n", texturePos);
-
-		uint32 *paletteFrame = GFX.PaletteFrame;
-		if (paletteShift == 2)
-			paletteFrame = GFX.PaletteFrame4;
-		else if (paletteShift == 0)
-		{
-			paletteFrame = GFX.PaletteFrame4;
-			pal = 0;
-		}
-
-		//printf ("  TILE addr:%x pal:%d %d\n", TileAddr, pal, texturePos);
-		//if (screenOffset == 0)
-		//	printf ("  %d %d %d %d\n", startPalette, pal, paletteFrame[pal + startPalette / 16], GFX.VRAMPaletteFrame[TileAddr][pal]);
-
-		if (GFX.VRAMPaletteFrame[TileAddr][pal] != paletteFrame[pal + startPalette / 16])
-		{
-			texturePos = cacheGetSwapTexturePositionForAltFrameFast(TileAddr, pal);
-			GFX.VRAMPaletteFrame[TileAddr][pal] = paletteFrame[pal + startPalette / 16];
-
-			//if (screenOffset == 0)
-			//	printf ("cache %d\n", texturePos);
-			gpu3dsCacheToTexturePosition(pCache, GFX.ScreenColors, texturePos);
-		}
-    }
-	
-
-	// Render tile
-	//
-	screenOffset += startX;
-	int x0 = screenOffset & 0xFF;
-	int y0 = (screenOffset >> 8) + BG.Depth;
-	int x1 = x0 + width;
-	int y1 = y0 + height;
-
-	int tx0 = startX;
-	int ty0 = startLine >> 3;
-	int tx1 = tx0 + width;
-	int ty1 = ty0 + height;
-
-	gpu3dsAddTileVertexes(
-		x0, y0, x1, y1,
-		tx0, ty0,
-		tx1, ty1, (snesTile & (H_FLIP | V_FLIP)) + texturePos);
-		
-}
-
-
-//-------------------------------------------------------------------
-// Draw tile using 3D hardware
-//-------------------------------------------------------------------
-inline void __attribute__((always_inline)) S9xDrawBGTileHardwareInline (
-    int tileSize, int tileShift, int paletteShift, int paletteMask, int startPalette, bool directColourMode,
-    uint32 snesTile, uint32 screenOffset, uint32 startLine, uint32 height)
-{
-	S9xDrawBGClippedTileHardwareInline (
-        tileSize, tileShift, paletteShift, paletteMask, startPalette, directColourMode,
-        snesTile, screenOffset, 0, 8, startLine, height);
-}
-
 
 
 //-------------------------------------------------------------------
@@ -857,7 +696,8 @@ inline void __attribute__((always_inline)) S9xDrawBGTileHardwareInline (
 //-------------------------------------------------------------------
 inline void __attribute__((always_inline)) S9xDrawBGFullTileHardwareInline (
     int tileSize, int tileShift, int paletteShift, int paletteMask, int startPalette, bool directColourMode,
-	int32 snesTile, int32 screenX, int32 screenY,
+	int prio, int depth0, int depth1, 
+	int32 snesTile, int32 screenX, int32 screenY, 
 	int32 startLine, int32 height)
 {
 	int texturePos = 0;
@@ -888,14 +728,14 @@ inline void __attribute__((always_inline)) S9xDrawBGFullTileHardwareInline (
         if (BG.Buffered [TileNumber] == BLANK_TILE)
             return;
 
-        GFX.VRAMPaletteFrame[TileAddr][0] = 0;
-        GFX.VRAMPaletteFrame[TileAddr][1] = 0;
-        GFX.VRAMPaletteFrame[TileAddr][2] = 0;
-        GFX.VRAMPaletteFrame[TileAddr][3] = 0;
-        GFX.VRAMPaletteFrame[TileAddr][4] = 0;
-        GFX.VRAMPaletteFrame[TileAddr][5] = 0;
-        GFX.VRAMPaletteFrame[TileAddr][6] = 0;
-        GFX.VRAMPaletteFrame[TileAddr][7] = 0;
+        GFX.VRAMPaletteFrame[TileAddr / 8][0] = 0;
+        GFX.VRAMPaletteFrame[TileAddr / 8][1] = 0;
+        GFX.VRAMPaletteFrame[TileAddr / 8][2] = 0;
+        GFX.VRAMPaletteFrame[TileAddr / 8][3] = 0;
+        GFX.VRAMPaletteFrame[TileAddr / 8][4] = 0;
+        GFX.VRAMPaletteFrame[TileAddr / 8][5] = 0;
+        GFX.VRAMPaletteFrame[TileAddr / 8][6] = 0;
+        GFX.VRAMPaletteFrame[TileAddr / 8][7] = 0;
     }
 
 	//if (screenOffset == 0)
@@ -921,27 +761,26 @@ inline void __attribute__((always_inline)) S9xDrawBGFullTileHardwareInline (
         if (IPPU.DirectColourMapsNeedRebuild)
             S9xBuildDirectColourMaps ();
         pal = (snesTile >> 10) & paletteMask;
-		GFX.ScreenColors = DirectColourMaps [pal];
-		texturePos = cacheGetTexturePositionFast(TileAddr, pal);
+		texturePos = cache3dsGetTexturePositionFast(TileAddr, pal);
 
-        if (GFX.VRAMPaletteFrame[TileAddr][pal] != GFX.PaletteFrame[pal + startPalette / 16])
+        if (GFX.VRAMPaletteFrame[TileAddr / 8][pal] != GFX.PaletteFrame[pal])
         {
 			texturePos = cacheGetSwapTexturePositionForAltFrameFast(TileAddr, pal);
-            GFX.VRAMPaletteFrame[TileAddr][pal] = GFX.PaletteFrame[pal + startPalette / 16];
+            GFX.VRAMPaletteFrame[TileAddr / 8][pal] = GFX.PaletteFrame[pal];
 
-			gpu3dsCacheToTexturePosition(pCache, GFX.ScreenColors, texturePos);
+			uint16 *screenColors = DirectColourMaps [pal];
+			cache3dsCacheSnesTileToTexturePosition(pCache, screenColors, texturePos);
         }
     }
     else
     {
         pal = (snesTile >> 10) & paletteMask;
-        GFX.ScreenColors = &IPPU.ScreenColors [(pal << paletteShift) + startPalette];
-		texturePos = cacheGetTexturePositionFast(TileAddr, pal);
+		texturePos = cache3dsGetTexturePositionFast(TileAddr, pal);
 		//printf ("%d\n", texturePos);
 
 		uint32 *paletteFrame = GFX.PaletteFrame;
 		if (paletteShift == 2)
-			paletteFrame = GFX.PaletteFrame4;
+			paletteFrame = GFX.PaletteFrame4BG[startPalette / 32];
 		else if (paletteShift == 0)
 		{
 			paletteFrame = GFX.PaletteFrame256;
@@ -949,16 +788,17 @@ inline void __attribute__((always_inline)) S9xDrawBGFullTileHardwareInline (
 		}
 
 		//if (screenOffset == 0)
-		//	printf ("  %d %d %d %d\n", startPalette, pal, paletteFrame[pal + startPalette / 16], GFX.VRAMPaletteFrame[TileAddr][pal]);
+		//	printf ("  %d %d %d %d\n", startPalette, pal, paletteFrame[pal + startPalette / 16], GFX.VRAMPaletteFrame[TileAddr / 8][pal]);
 
-		if (GFX.VRAMPaletteFrame[TileAddr][pal] != paletteFrame[pal + startPalette / 16])
+		if (GFX.VRAMPaletteFrame[TileAddr / 8][pal] != paletteFrame[pal])
 		{
 			texturePos = cacheGetSwapTexturePositionForAltFrameFast(TileAddr, pal);
-			GFX.VRAMPaletteFrame[TileAddr][pal] = paletteFrame[pal + startPalette / 16];
+			GFX.VRAMPaletteFrame[TileAddr / 8][pal] = paletteFrame[pal];
 
 			//if (screenOffset == 0)
 			//	printf ("cache %d\n", texturePos);
-			gpu3dsCacheToTexturePosition(pCache, GFX.ScreenColors, texturePos);
+			uint16 *screenColors = &IPPU.ScreenColors [(pal << paletteShift) + startPalette];
+			cache3dsCacheSnesTileToTexturePosition(pCache, screenColors, texturePos);
 		}
     }
 	
@@ -966,7 +806,11 @@ inline void __attribute__((always_inline)) S9xDrawBGFullTileHardwareInline (
 	// Render tile
 	//
 	int x0 = screenX;
-	int y0 = screenY + BG.Depth;
+	int y0 = screenY;
+	if (prio == 0)
+		y0 += depth0;
+	else
+		y0 += depth1;
 	int x1 = x0 + 8;
 	int y1 = y0 + height;
 
@@ -988,6 +832,7 @@ inline void __attribute__((always_inline)) S9xDrawBGFullTileHardwareInline (
 //-------------------------------------------------------------------
 inline void __attribute__((always_inline)) S9xDrawHiresBGFullTileHardwareInline (
     int tileSize, int tileShift, int paletteShift, int paletteMask, int startPalette, bool directColourMode,
+	int prio, int depth0, int depth1,
 	int32 snesTile, int32 screenX, int32 screenY,
 	int32 startLine, int32 height)
 {
@@ -1019,14 +864,14 @@ inline void __attribute__((always_inline)) S9xDrawHiresBGFullTileHardwareInline 
         if (BG.Buffered [TileNumber] == BLANK_TILE)
             return;
 
-        GFX.VRAMPaletteFrame[TileAddr][0] = 0;
-        GFX.VRAMPaletteFrame[TileAddr][1] = 0;
-        GFX.VRAMPaletteFrame[TileAddr][2] = 0;
-        GFX.VRAMPaletteFrame[TileAddr][3] = 0;
-        GFX.VRAMPaletteFrame[TileAddr][4] = 0;
-        GFX.VRAMPaletteFrame[TileAddr][5] = 0;
-        GFX.VRAMPaletteFrame[TileAddr][6] = 0;
-        GFX.VRAMPaletteFrame[TileAddr][7] = 0;
+        GFX.VRAMPaletteFrame[TileAddr / 8][0] = 0;
+        GFX.VRAMPaletteFrame[TileAddr / 8][1] = 0;
+        GFX.VRAMPaletteFrame[TileAddr / 8][2] = 0;
+        GFX.VRAMPaletteFrame[TileAddr / 8][3] = 0;
+        GFX.VRAMPaletteFrame[TileAddr / 8][4] = 0;
+        GFX.VRAMPaletteFrame[TileAddr / 8][5] = 0;
+        GFX.VRAMPaletteFrame[TileAddr / 8][6] = 0;
+        GFX.VRAMPaletteFrame[TileAddr / 8][7] = 0;
     }
 
 	//if (screenOffset == 0)
@@ -1053,26 +898,25 @@ inline void __attribute__((always_inline)) S9xDrawHiresBGFullTileHardwareInline 
             S9xBuildDirectColourMaps ();
         pal = (snesTile >> 10) & paletteMask;
 		GFX.ScreenColors = DirectColourMaps [pal];
-		texturePos = cacheGetTexturePositionFast(TileAddr, pal);
+		texturePos = cache3dsGetTexturePositionFast(TileAddr, pal);
 
-        if (GFX.VRAMPaletteFrame[TileAddr][pal] != GFX.PaletteFrame[pal + startPalette / 16])
+        if (GFX.VRAMPaletteFrame[TileAddr / 8][pal] != GFX.PaletteFrame[pal])
         {
 			texturePos = cacheGetSwapTexturePositionForAltFrameFast(TileAddr, pal);
-            GFX.VRAMPaletteFrame[TileAddr][pal] = GFX.PaletteFrame[pal + startPalette / 16];
+            GFX.VRAMPaletteFrame[TileAddr / 8][pal] = GFX.PaletteFrame[pal];
 
-			gpu3dsCacheToTexturePosition(pCache, GFX.ScreenColors, texturePos);
+			cache3dsCacheSnesTileToTexturePosition(pCache, GFX.ScreenColors, texturePos);
         }
     }
     else
     {
         pal = (snesTile >> 10) & paletteMask;
-        GFX.ScreenColors = &IPPU.ScreenColors [(pal << paletteShift) + startPalette];
-		texturePos = cacheGetTexturePositionFast(TileAddr, pal);
+		texturePos = cache3dsGetTexturePositionFast(TileAddr, pal);
 		//printf ("%d\n", texturePos);
 
 		uint32 *paletteFrame = GFX.PaletteFrame;
 		if (paletteShift == 2)
-			paletteFrame = GFX.PaletteFrame4;
+			paletteFrame = GFX.PaletteFrame4BG[startPalette / 32];
 		else if (paletteShift == 0)
 		{
 			paletteFrame = GFX.PaletteFrame256;
@@ -1080,26 +924,54 @@ inline void __attribute__((always_inline)) S9xDrawHiresBGFullTileHardwareInline 
 		}
 
 		//if (screenOffset == 0)
-		//	printf ("  %d %d %d %d\n", startPalette, pal, paletteFrame[pal + startPalette / 16], GFX.VRAMPaletteFrame[TileAddr][pal]);
+		//	printf ("  %d %d %d %d\n", startPalette, pal, paletteFrame[pal + startPalette / 16], GFX.VRAMPaletteFrame[TileAddr / 8][pal]);
 
-		if (GFX.VRAMPaletteFrame[TileAddr][pal] != paletteFrame[pal + startPalette / 16])
+		if (GFX.VRAMPaletteFrame[TileAddr / 8][pal] != paletteFrame[pal])
 		{
 			texturePos = cacheGetSwapTexturePositionForAltFrameFast(TileAddr, pal);
-			GFX.VRAMPaletteFrame[TileAddr][pal] = paletteFrame[pal + startPalette / 16];
+			GFX.VRAMPaletteFrame[TileAddr / 8][pal] = paletteFrame[pal];
 
 			//if (screenOffset == 0)
 			//	printf ("cache %d\n", texturePos);
-			gpu3dsCacheToTexturePosition(pCache, GFX.ScreenColors, texturePos);
+			uint16 *screenColors = &IPPU.ScreenColors [(pal << paletteShift) + startPalette];
+			cache3dsCacheSnesTileToTexturePosition(pCache, screenColors, texturePos);
 		}
     }
 	
+	int x0 = screenX >> 1;
+	int y0 = screenY;
+	if (prio == 0)
+		y0 += depth0;
+	else
+		y0 += depth1;
+	
+	int x1 = x0 + 4;
+	int y1 = y0 + height;
 
+	int tx0 = 0;
+	int ty0 = startLine >> 3;
+	int tx1 = 7;
+	int ty1 = ty0 + height;
+
+	if (IPPU.Interlace)
+		ty1 = ty1 + height - 1;
+
+	gpu3dsAddTileVertexes(
+		x0, y0, x1, y1,
+		tx0, ty0,
+		tx1, ty1, (snesTile & (H_FLIP | V_FLIP)) + texturePos);
 	// Render tile
 	//
+	/*
 	if (!IPPU.Interlace)
 	{
 		int x0 = screenX >> 1;
-		int y0 = screenY + BG.Depth;
+		int y0 = screenY;
+		if (prio == 0)
+			y0 += depth0;
+		else
+			y0 += depth1;
+		
 		int x1 = x0 + 4;
 		int y1 = y0 + height;
 
@@ -1115,7 +987,12 @@ inline void __attribute__((always_inline)) S9xDrawHiresBGFullTileHardwareInline 
 	else
 	{
 		int x0 = screenX >> 1;
-		int y0 = screenY + BG.Depth;
+		int y0 = screenY;
+		if (prio == 0)
+			y0 += depth0;
+		else
+			y0 += depth1;
+		
 		int x1 = x0 + 4;
 		int y1 = y0 + height;
 
@@ -1129,6 +1006,7 @@ inline void __attribute__((always_inline)) S9xDrawHiresBGFullTileHardwareInline 
 			tx1, ty1, (snesTile & (H_FLIP | V_FLIP)) + texturePos);
 		
 	}
+	*/
 }
 
 
@@ -1139,7 +1017,7 @@ inline void __attribute__((always_inline)) S9xDrawHiresBGFullTileHardwareInline 
 
 inline void __attribute__((always_inline)) S9xDrawOffsetBackgroundHardwarePriority0Inline (
     int tileSize, int tileShift, int bitShift, int paletteShift, int paletteMask, int startPalette, bool directColourMode,
-	uint32 BGMode, uint32 bg, bool sub, int depth)
+	uint32 BGMode, uint32 bg, bool sub, int depth0, int depth1)
 {
     uint32 Tile;
     uint16 *SC0;
@@ -1150,10 +1028,25 @@ inline void __attribute__((always_inline)) S9xDrawOffsetBackgroundHardwarePriori
     uint16 *BPS1;
     uint16 *BPS2;
     uint16 *BPS3;
-    uint32 Width;
+    //uint32 Width;
     int VOffsetOffset = BGMode == 4 ? 0 : 32;
 
 	S9xComputeAndEnableStencilFunction(bg, sub);
+
+	// Note: We draw subscreens first, then the main screen.
+	// So if the subscreen has already been drawn, and we are drawing the main screen,
+	// we simply just redraw the same vertices that we have saved.
+	//
+	if (layerDrawn[bg])
+	{
+		gpu3dsBindTextureSnesTileCache(GPU_TEXUNIT0);
+		gpu3dsSetTextureEnvironmentReplaceTexture0WithColorAlpha();
+		gpu3dsEnableAlphaTestNotEqualsZero();
+		gpu3dsEnableDepthTest();
+		//printf ("Redraw: %d (%s)\n", bg, sub ? "sub" : "main");
+		gpu3dsDrawVertexes(true, bg);	// redraw saved vertices
+		return;
+	}
 
     GFX.PixSize = 1;
 
@@ -1167,9 +1060,10 @@ inline void __attribute__((always_inline)) S9xDrawOffsetBackgroundHardwarePriori
     BG.PaletteShift = paletteShift;
     BG.PaletteMask = paletteMask;
     BG.DirectColourMode = directColourMode;
-	BG.Depth = depth;
+	//BG.Depth = depth;
+	//printf ("mode:%d depth: %d\n", PPU.BGMode, BG.Depth);
 	
-	BG.DrawTileCount[bg] = 0;
+	//BG.DrawTileCount[bg] = 0;
 	
     BPS0 = (uint16 *) &Memory.VRAM[PPU.BG[2].SCBase << 1];
 	
@@ -1217,7 +1111,7 @@ inline void __attribute__((always_inline)) S9xDrawOffsetBackgroundHardwarePriori
 		SC3-=0x08000;
 
 
-    static const int Lines = 1;
+    
     int OffsetMask;
     int OffsetShift;
     int OffsetEnableMask = 1 << (bg + 13);
@@ -1232,285 +1126,288 @@ inline void __attribute__((always_inline)) S9xDrawOffsetBackgroundHardwarePriori
 		OffsetMask = 0x1ff;
 		OffsetShift = 3;
     }
-	
-    for (uint32 Y = GFX.StartY; Y <= GFX.EndY; Y++)
-    {
-		uint32 VOff = LineData [Y].BG[2].VOffset - 1;
-//		uint32 VOff = LineData [Y].BG[2].VOffset;
-		uint32 HOff = LineData [Y].BG[2].HOffset;
 
-		int VirtAlign;
-		int ScreenLine = VOff >> 3;
-		int t1;
-		int t2;
-		uint16 *s0;
-		uint16 *s1;
-		uint16 *s2;
-		
-		if (ScreenLine & 0x20)
-			s1 = BPS2, s2 = BPS3;
-		else
-			s1 = BPS0, s2 = BPS1;
-		
-		
-		s1 += (ScreenLine & 0x1f) << 5;
-		s2 += (ScreenLine & 0x1f) << 5;
-		
-		if(BGMode != 4)
+	// Optimized version of the offset per tile renderer
+	//
+    for (uint32 OY = GFX.StartY; OY <= GFX.EndY; )
+    {
+		// Do a check to find out how many scanlines
+		// that the BGnVOFS, BGnHOFS, BG2VOFS, BG2HOS
+		// remains constant
+		//
+		int TotalLines = 1;
+		for (; TotalLines < PPU.ScreenHeight - 1; TotalLines++)
 		{
-			if((ScreenLine & 0x1f) == 0x1f)
-			{
-				if(ScreenLine & 0x20)
-					VOffsetOffset = BPS0 - BPS2 - 0x1f*32;
-				else
-					VOffsetOffset = BPS2 - BPS0 - 0x1f*32;
-			}
-			else
-			{
-				VOffsetOffset = 32;
-			}
+			int y = OY + TotalLines - 1;
+			if (y >= GFX.EndY)
+				break;
+			if (!(LineData [y].BG[bg].VOffset == LineData [y + 1].BG[bg].VOffset &&
+				LineData [y].BG[bg].HOffset == LineData [y + 1].BG[bg].HOffset &&
+				LineData [y].BG[2].VOffset == LineData [y + 1].BG[2].VOffset && 
+				LineData [y].BG[2].HOffset == LineData [y + 1].BG[2].HOffset))
+				break;
 		}
 		
-		int clipcount = GFX.pCurrentClip->Count [bg];
-		if (!clipcount)
-			clipcount = 1;
-		
-		for (int clip = 0; clip < clipcount; clip++)
+		// For those lines, draw the tiles column by column 
+		// (from the left to the right of the screen)
+		//
+		for (int Left = 0; Left <= 256; Left += 8)	// Bug fix: It should be Left <= 256 instead of Left < 256
 		{
-			uint32 Left;
-			uint32 Right;
-			
-			if (!GFX.pCurrentClip->Count [bg])
+			for (int Y = OY; Y < OY + TotalLines; )
 			{
-				Left = 0;
-				Right = 256;
-			}
-			else
-			{
-				Left = GFX.pCurrentClip->Left [clip][bg];
-				Right = GFX.pCurrentClip->Right [clip][bg];
-				
-				if (Right <= Left)
-					continue;
-			}
-			
-			uint32 VOffset;
-			uint32 HOffset;
-			//added:
-			uint32 LineHOffset=LineData [Y].BG[bg].HOffset;
-			
-			uint32 Offset;
-			uint32 HPos;
-			uint32 Quot;
-			uint32 Count;
-			uint16 *t;
-			uint32 Quot2;
-			uint32 VCellOffset;
-			uint32 HCellOffset;
-			uint16 *b1;
-			uint16 *b2;
-			uint32 TotalCount = 0;
-			uint32 MaxCount = 8;
-			
-			uint32 s = Left * GFX.PixSize + Y * 256;
-			bool8 left_hand_edge = (Left == 0);
-			Width = Right - Left;
-			
-			if (Left & 7)
-				MaxCount = 8 - (Left & 7);
-			
-			while (Left < Right) 
-			{
-				if (left_hand_edge)
-				{
-					// The SNES offset-per-tile background mode has a
-					// hardware limitation that the offsets cannot be set
-					// for the tile at the left-hand edge of the screen.
-					VOffset = LineData [Y].BG[bg].VOffset;
+				uint32 VOff = LineData [Y].BG[2].VOffset - 1;
+		//		uint32 VOff = LineData [Y].BG[2].VOffset;
+				uint32 HOff = LineData [Y].BG[2].HOffset;
 
-					//MKendora; use temp var to reduce memory accesses
-					//HOffset = LineData [Y].BG[bg].HOffset;
-
-					HOffset = LineHOffset;
-					//End MK
-
-					left_hand_edge = FALSE;
-				}
-				else
-				{
-					// All subsequent offset tile data is shifted left by one,
-					// hence the - 1 below.
-
-					Quot2 = ((HOff + Left - 1) & OffsetMask) >> 3;
-					
-					if (Quot2 > 31)
-						s0 = s2 + (Quot2 & 0x1f);
-					else
-						s0 = s1 + Quot2;
-					
-					HCellOffset = READ_2BYTES (s0);
-					
-					if (BGMode == 4)
-					{
-						VOffset = LineData [Y].BG[bg].VOffset;
-						
-						//MKendora another mem access hack
-						//HOffset = LineData [Y].BG[bg].HOffset;
-						HOffset=LineHOffset;
-						//end MK
-
-						if ((HCellOffset & OffsetEnableMask))
-						{
-							if (HCellOffset & 0x8000)
-								VOffset = HCellOffset + 1;
-							else
-								HOffset = HCellOffset;
-						}
-					}
-					else
-					{
-						VCellOffset = READ_2BYTES (s0 + VOffsetOffset);
-						if ((VCellOffset & OffsetEnableMask))
-							VOffset = VCellOffset + 1;
-						else
-							VOffset = LineData [Y].BG[bg].VOffset;
-
-						//MKendora Strike Gunner fix
-						if ((HCellOffset & OffsetEnableMask))
-						{
-							//HOffset= HCellOffset;
-							
-							HOffset = (HCellOffset & ~7)|(LineHOffset&7);
-							//HOffset |= LineData [Y].BG[bg].HOffset&7;
-						}
-						else
-							HOffset=LineHOffset;
-							//HOffset = LineData [Y].BG[bg].HOffset - 
-							//Settings.StrikeGunnerOffsetHack;
-						//HOffset &= (~7);
-						//end MK
-					}
-				}
-				VirtAlign = ((Y + VOffset) & 7) << 3;
-				ScreenLine = (VOffset + Y) >> OffsetShift;
-				
-				if (((VOffset + Y) & 15) > 7)
-				{
-					t1 = 16;
-					t2 = 0;
-				}
-				else
-				{
-					t1 = 0;
-					t2 = 16;
-				}
+				int VirtAlign;
+				int ScreenLine = VOff >> 3;
+				int t1;
+				int t2;
+				uint16 *s0;
+				uint16 *s1;
+				uint16 *s2;
 				
 				if (ScreenLine & 0x20)
-					b1 = SC2, b2 = SC3;
+					s1 = BPS2, s2 = BPS3;
 				else
-					b1 = SC0, b2 = SC1;
+					s1 = BPS0, s2 = BPS1;
 				
-				b1 += (ScreenLine & 0x1f) << 5;
-				b2 += (ScreenLine & 0x1f) << 5;
 				
-				HPos = (HOffset + Left) & OffsetMask;
+				s1 += (ScreenLine & 0x1f) << 5;
+				s2 += (ScreenLine & 0x1f) << 5;
 				
-				Quot = HPos >> 3;
-				
-				if (tileSize == 8)
+				if(BGMode != 4)
 				{
-					if (Quot > 31)
-						t = b2 + (Quot & 0x1f);
-					else
-						t = b1 + Quot;
-				}
-				else
-				{
-					if (Quot > 63)
-						t = b2 + ((Quot >> 1) & 0x1f);
-					else
-						t = b1 + (Quot >> 1);
-				}
-				
-				if (MaxCount + TotalCount > Width)
-					MaxCount = Width - TotalCount;
-				
-				Offset = HPos & 7;
-				
-				//Count =1;
-				Count = 8 - Offset;
-				if (Count > MaxCount)
-					Count = MaxCount;
-				
-				s -= Offset * GFX.PixSize;
-				Tile = READ_2BYTES(t);
-
-				int tpriority = (Tile & 0x2000) >> 13;
-				
-				if (tileSize == 8)
-				{
-					if (tpriority == 0)
-						S9xDrawBGClippedTileHardwareInline (
-							tileSize, tileShift, paletteShift, paletteMask, startPalette, directColourMode,
-							Tile, s, Offset, Count, VirtAlign, Lines);
-					else
-						DrawClippedTileLater (Tile, s, Offset, Count, VirtAlign, Lines);
-				}
-				else
-				{
-					if (!(Tile & (V_FLIP | H_FLIP)))
+					if((ScreenLine & 0x1f) == 0x1f)
 					{
-						if (tpriority == 0)
-							S9xDrawBGClippedTileHardwareInline (
-								tileSize, tileShift, paletteShift, paletteMask, startPalette, directColourMode,
-								Tile + t1 + (Quot & 1), s, Offset, Count, VirtAlign, Lines);
+						if(ScreenLine & 0x20)
+							VOffsetOffset = BPS0 - BPS2 - 0x1f*32;
 						else
-							DrawClippedTileLater (Tile + t1 + (Quot & 1), s, Offset, Count, VirtAlign, Lines);
+							VOffsetOffset = BPS2 - BPS0 - 0x1f*32;
 					}
 					else
-						if (Tile & H_FLIP)
+					{
+						VOffsetOffset = 32;
+					}
+				}
+				
+				//for (int clip = 0; clip < clipcount; clip++)
+			
+				uint32 VOffset;
+				uint32 HOffset;
+				//added:
+				uint32 LineHOffset=LineData [Y].BG[bg].HOffset;
+				
+				uint32 Offset;
+				uint32 HPos;
+				uint32 Quot;
+				uint16 *t;
+				uint32 Quot2;
+				uint32 VCellOffset;
+				uint32 HCellOffset;
+				uint16 *b1;
+				uint16 *b2;
+				uint32 Lines;
+				
+				//int sX = Left;
+				bool8 left_hand_edge = (Left == 0);
+				//Width = Right - Left;
+				
+				//while (Left < Right) 
+				{
+					if (left_hand_edge)
+					{
+						// The SNES offset-per-tile background mode has a
+						// hardware limitation that the offsets cannot be set
+						// for the tile at the left-hand edge of the screen.
+						VOffset = LineData [Y].BG[bg].VOffset;
+
+						//MKendora; use temp var to reduce memory accesses
+						//HOffset = LineData [Y].BG[bg].HOffset;
+
+						HOffset = LineHOffset;
+						//End MK
+
+						left_hand_edge = FALSE;
+					}
+					else
+					{
+						// All subsequent offset tile data is shifted left by one,
+						// hence the - 1 below.
+
+						Quot2 = ((HOff + Left - 1) & OffsetMask) >> 3;
+						
+						if (Quot2 > 31)
+							s0 = s2 + (Quot2 & 0x1f);
+						else
+							s0 = s1 + Quot2;
+						
+						HCellOffset = READ_2BYTES (s0);
+						
+						if (BGMode == 4)
 						{
-							if (Tile & V_FLIP)
+							VOffset = LineData [Y].BG[bg].VOffset;
+							
+							//MKendora another mem access hack
+							//HOffset = LineData [Y].BG[bg].HOffset;
+							HOffset=LineHOffset;
+							//end MK
+
+							if ((HCellOffset & OffsetEnableMask))
 							{
-								if (tpriority == 0)
-									S9xDrawBGClippedTileHardwareInline (
-										tileSize, tileShift, paletteShift, paletteMask, startPalette, directColourMode,
-										Tile + t2 + 1 - (Quot & 1), s, Offset, Count, VirtAlign, Lines);
+								if (HCellOffset & 0x8000)
+									VOffset = HCellOffset + 1;
 								else
-									DrawClippedTileLater (Tile + t2 + 1 - (Quot & 1), s, Offset, Count, VirtAlign, Lines);
-							}
-							else
-							{
-								if (tpriority == 0)
-									S9xDrawBGClippedTileHardwareInline (
-										tileSize, tileShift, paletteShift, paletteMask, startPalette, directColourMode,
-										Tile + t1 + 1 - (Quot & 1), s, Offset, Count, VirtAlign, Lines);
-								else
-									DrawClippedTileLater (Tile + t1 + 1 - (Quot & 1), s, Offset, Count, VirtAlign, Lines);
+									HOffset = HCellOffset;
 							}
 						}
 						else
 						{
-							if (tpriority == 0)
-								S9xDrawBGClippedTileHardwareInline (
-									tileSize, tileShift, paletteShift, paletteMask, startPalette, directColourMode,
-									Tile + t2 + (Quot & 1), s, Offset, Count, VirtAlign, Lines);
+							VCellOffset = READ_2BYTES (s0 + VOffsetOffset);
+							if ((VCellOffset & OffsetEnableMask))
+								VOffset = VCellOffset + 1;
 							else
-								DrawClippedTileLater (Tile + t2 + (Quot & 1), s, Offset, Count, VirtAlign, Lines);
+								VOffset = LineData [Y].BG[bg].VOffset;
+
+							//MKendora Strike Gunner fix
+							if ((HCellOffset & OffsetEnableMask))
+							{
+								//HOffset= HCellOffset;
+								
+								HOffset = (HCellOffset & ~7)|(LineHOffset&7);
+								//HOffset |= LineData [Y].BG[bg].HOffset&7;
+							}
+							else
+								HOffset=LineHOffset;
+								//HOffset = LineData [Y].BG[bg].HOffset - 
+								//Settings.StrikeGunnerOffsetHack;
+							//HOffset &= (~7);
+							//end MK
 						}
+					}
+					VirtAlign = ((Y + VOffset) & 7) << 3;
+					Lines = 8 - (VirtAlign >> 3);
+					//printf ("    L=%d\n", Lines);
+					if (Y + Lines >= OY + TotalLines)
+						Lines = OY + TotalLines - Y;
+					ScreenLine = (VOffset + Y) >> OffsetShift;
+					
+					if (((VOffset + Y) & 15) > 7)
+					{
+						t1 = 16;
+						t2 = 0;
+					}
+					else
+					{
+						t1 = 0;
+						t2 = 16;
+					}
+					
+					if (ScreenLine & 0x20)
+						b1 = SC2, b2 = SC3;
+					else
+						b1 = SC0, b2 = SC1;
+					
+					b1 += (ScreenLine & 0x1f) << 5;
+					b2 += (ScreenLine & 0x1f) << 5;
+					
+					HPos = (HOffset + Left) & OffsetMask;
+					
+					Quot = HPos >> 3;
+					
+					if (tileSize == 8)
+					{
+						if (Quot > 31)
+							t = b2 + (Quot & 0x1f);
+						else
+							t = b1 + Quot;
+					}
+					else
+					{
+						if (Quot > 63)
+							t = b2 + ((Quot >> 1) & 0x1f);
+						else
+							t = b1 + (Quot >> 1);
+					}
+					
+					Offset = HPos & 7;
+					
+					int sX = Left - Offset;
+
+					// Don't display anything beyond the right edge.
+					if (sX >= 256)
+						break;
+
+					Tile = READ_2BYTES(t);
+
+					int tpriority = (Tile & 0x2000) >> 13;
+					
+					if (tileSize == 8)
+					{
+						S9xDrawBGFullTileHardwareInline (
+							tileSize, tileShift, paletteShift, paletteMask, startPalette, directColourMode,
+							tpriority, depth0, depth1,
+							Tile, sX, Y, 
+							VirtAlign, Lines);
+					}
+					else
+					{
+						if (!(Tile & (V_FLIP | H_FLIP)))
+						{
+							S9xDrawBGFullTileHardwareInline (
+								tileSize, tileShift, paletteShift, paletteMask, startPalette, directColourMode,
+								tpriority, depth0, depth1,
+								Tile + t1 + (Quot & 1), sX, Y, 
+								VirtAlign, Lines);
+						}
+						else
+							if (Tile & H_FLIP)
+							{
+								if (Tile & V_FLIP)
+								{
+									S9xDrawBGFullTileHardwareInline (
+										tileSize, tileShift, paletteShift, paletteMask, startPalette, directColourMode,
+										tpriority, depth0, depth1,
+										Tile + t2 + 1 - (Quot & 1), sX, Y, 
+										VirtAlign, Lines);
+								}
+								else
+								{
+									S9xDrawBGFullTileHardwareInline (
+										tileSize, tileShift, paletteShift, paletteMask, startPalette, directColourMode,
+										tpriority, depth0, depth1,
+										Tile + t1 + 1 - (Quot & 1), sX, Y, 
+										VirtAlign, Lines);
+								}
+							}
+							else
+							{
+								S9xDrawBGFullTileHardwareInline (
+									tileSize, tileShift, paletteShift, paletteMask, startPalette, directColourMode,
+									tpriority, depth0, depth1,
+									Tile + t2 + (Quot & 1), sX, Y, 
+									VirtAlign, Lines);
+							}
+					}
 				}
-				
-				Left += Count;
-				TotalCount += Count;
-				s += (Offset + Count) * GFX.PixSize;
-				MaxCount = 8;
+
+				// Proceed to the tile below, in the same column.
+				//
+				Y += Lines;
 			}
 		}
+		OY += TotalLines;
     }
 
+	//printf ("BG OPT %d (Mode = %d)\n", bg, BGMode);
+	//gpu3dsSetTextureEnvironmentReplaceTexture0();
 	gpu3dsBindTextureSnesTileCache(GPU_TEXUNIT0);
+	gpu3dsSetTextureEnvironmentReplaceTexture0WithColorAlpha();
 	gpu3dsEnableAlphaTestNotEqualsZero();
-	gpu3dsDrawVertexes();
+	gpu3dsEnableDepthTest();
+	//printf ("Draw  : %d (%s)\n", bg, sub ? "sub" : "main");
+	gpu3dsDrawVertexes(false, bg);
+	layerDrawn[bg] = true;
 }
 
 
@@ -1519,7 +1416,7 @@ inline void __attribute__((always_inline)) S9xDrawOffsetBackgroundHardwarePriori
 //-------------------------------------------------------------------
 
 void S9xDrawOffsetBackgroundHardwarePriority0Inline_4Color_8x8
-    (uint32 BGMode, uint32 bg, bool sub, int depth)
+    (uint32 BGMode, uint32 bg, bool sub, int depth0, int depth1)
 {
     S9xDrawOffsetBackgroundHardwarePriority0Inline(
         8,              // tileSize
@@ -1529,11 +1426,11 @@ void S9xDrawOffsetBackgroundHardwarePriority0Inline_4Color_8x8
         7,              // paletteMask
         0,              // startPalette
         FALSE,          // directColourMode
-        BGMode, bg, sub, depth);
+        BGMode, bg, sub, depth0, depth1);
 }
 
 void S9xDrawOffsetBackgroundHardwarePriority0Inline_4Color_16x16
-    (uint32 BGMode, uint32 bg, bool sub, int depth)
+    (uint32 BGMode, uint32 bg, bool sub, int depth0, int depth1)
 {
     S9xDrawOffsetBackgroundHardwarePriority0Inline(
         16,             // tileSize
@@ -1543,21 +1440,21 @@ void S9xDrawOffsetBackgroundHardwarePriority0Inline_4Color_16x16
         7,              // paletteMask
         0,              // startPalette
         FALSE,          // directColourMode
-        BGMode, bg, sub, depth);
+        BGMode, bg, sub, depth0, depth1);
 }
 
 void S9xDrawOffsetBackgroundHardwarePriority0Inline_4Color
-    (uint32 BGMode, uint32 bg, bool sub, int depth)
+    (uint32 BGMode, uint32 bg, bool sub, int depth0, int depth1)
 {
     if (BGSizes [PPU.BG[bg].BGSize] == 8)
     {
         S9xDrawOffsetBackgroundHardwarePriority0Inline_4Color_8x8(
-            BGMode, bg, sub, depth);
+            BGMode, bg, sub, depth0, depth1);
     }
     else
     {
         S9xDrawOffsetBackgroundHardwarePriority0Inline_4Color_16x16(
-            BGMode, bg, sub, depth);
+            BGMode, bg, sub, depth0, depth1);
     }
 }
 
@@ -1566,7 +1463,7 @@ void S9xDrawOffsetBackgroundHardwarePriority0Inline_4Color
 //-------------------------------------------------------------------
 
 void S9xDrawOffsetBackgroundHardwarePriority0Inline_16Color_8x8
-    (uint32 BGMode, uint32 bg, bool sub, int depth)
+    (uint32 BGMode, uint32 bg, bool sub, int depth0, int depth1)
 {
     S9xDrawOffsetBackgroundHardwarePriority0Inline(
         8,              // tileSize
@@ -1576,11 +1473,11 @@ void S9xDrawOffsetBackgroundHardwarePriority0Inline_16Color_8x8
         7,              // paletteMask
         0,              // startPalette
         FALSE,          // directColourMode
-        BGMode, bg, sub, depth);
+        BGMode, bg, sub, depth0, depth1);
 }
 
 void S9xDrawOffsetBackgroundHardwarePriority0Inline_16Color_16x16
-    (uint32 BGMode, uint32 bg, bool sub, int depth)
+    (uint32 BGMode, uint32 bg, bool sub, int depth0, int depth1)
 {
     S9xDrawOffsetBackgroundHardwarePriority0Inline(
         16,             // tileSize
@@ -1590,21 +1487,21 @@ void S9xDrawOffsetBackgroundHardwarePriority0Inline_16Color_16x16
         7,              // paletteMask
         0,              // startPalette
         FALSE,          // directColourMode
-        BGMode, bg, sub, depth);
+        BGMode, bg, sub, depth0, depth1);
 }
 
 void S9xDrawOffsetBackgroundHardwarePriority0Inline_16Color
-    (uint32 BGMode, uint32 bg, bool sub, int depth)
+    (uint32 BGMode, uint32 bg, bool sub, int depth0, int depth1)
 {
     if (BGSizes [PPU.BG[bg].BGSize] == 8)
     {
         S9xDrawOffsetBackgroundHardwarePriority0Inline_16Color_8x8(
-            BGMode, bg, sub, depth);
+            BGMode, bg, sub, depth0, depth1);
     }
     else
     {
         S9xDrawOffsetBackgroundHardwarePriority0Inline_16Color_16x16(
-            BGMode, bg, sub, depth);
+            BGMode, bg, sub, depth0, depth1);
     }
 }
 
@@ -1614,7 +1511,7 @@ void S9xDrawOffsetBackgroundHardwarePriority0Inline_16Color
 //-------------------------------------------------------------------
 
 void S9xDrawOffsetBackgroundHardwarePriority0Inline_256NormalColor_8x8
-    (uint32 BGMode, uint32 bg, bool sub, int depth)
+    (uint32 BGMode, uint32 bg, bool sub, int depth0, int depth1)
 {
     S9xDrawOffsetBackgroundHardwarePriority0Inline(
         8,              // tileSize
@@ -1624,11 +1521,11 @@ void S9xDrawOffsetBackgroundHardwarePriority0Inline_256NormalColor_8x8
         0,              // paletteMask
         0,              // startPalette
         FALSE,          // directColourMode
-        BGMode, bg, sub, depth);
+        BGMode, bg, sub, depth0, depth1);
 }
 
 void S9xDrawOffsetBackgroundHardwarePriority0Inline_256NormalColor_16x16
-    (uint32 BGMode, uint32 bg, bool sub, int depth)
+    (uint32 BGMode, uint32 bg, bool sub, int depth0, int depth1)
 {
     S9xDrawOffsetBackgroundHardwarePriority0Inline(
         16,             // tileSize
@@ -1638,11 +1535,11 @@ void S9xDrawOffsetBackgroundHardwarePriority0Inline_256NormalColor_16x16
         0,              // paletteMask
         0,              // startPalette
         FALSE,          // directColourMode
-        BGMode, bg, sub, depth);
+        BGMode, bg, sub, depth0, depth1);
 }
 
 void S9xDrawOffsetBackgroundHardwarePriority0Inline_256DirectColor_8x8
-    (uint32 BGMode, uint32 bg, bool sub, int depth)
+    (uint32 BGMode, uint32 bg, bool sub, int depth0, int depth1)
 {
     S9xDrawOffsetBackgroundHardwarePriority0Inline(
         8,              // tileSize
@@ -1652,11 +1549,11 @@ void S9xDrawOffsetBackgroundHardwarePriority0Inline_256DirectColor_8x8
         0,              // paletteMask
         0,              // startPalette
         TRUE,          // directColourMode
-        BGMode, bg, sub, depth);
+        BGMode, bg, sub, depth0, depth1);
 }
 
 void S9xDrawOffsetBackgroundHardwarePriority0Inline_256DirectColor_16x16
-    (uint32 BGMode, uint32 bg, bool sub, int depth)
+    (uint32 BGMode, uint32 bg, bool sub, int depth0, int depth1)
 {
     S9xDrawOffsetBackgroundHardwarePriority0Inline(
         16,             // tileSize
@@ -1666,102 +1563,40 @@ void S9xDrawOffsetBackgroundHardwarePriority0Inline_256DirectColor_16x16
         0,              // paletteMask
         0,              // startPalette
         TRUE,          // directColourMode
-        BGMode, bg, sub, depth);
+        BGMode, bg, sub, depth0, depth1);
 }
 
 void S9xDrawOffsetBackgroundHardwarePriority0Inline_256Color
-    (uint32 BGMode, uint32 bg, bool sub, int depth)
+    (uint32 BGMode, uint32 bg, bool sub, int depth0, int depth1)
 {
     if (BGSizes [PPU.BG[bg].BGSize] == 8)
     {
         if (!(GFX.r2130 & 1))
             S9xDrawOffsetBackgroundHardwarePriority0Inline_256NormalColor_8x8(
-                BGMode, bg, sub, depth);
+                BGMode, bg, sub, depth0, depth1);
         else
             S9xDrawOffsetBackgroundHardwarePriority0Inline_256DirectColor_8x8(
-                BGMode, bg, sub, depth);
+                BGMode, bg, sub, depth0, depth1);
     }
     else
     {
         if (!(GFX.r2130 & 1))
             S9xDrawOffsetBackgroundHardwarePriority0Inline_256NormalColor_16x16(
-                BGMode, bg, sub, depth);
+                BGMode, bg, sub, depth0, depth1);
         else
             S9xDrawOffsetBackgroundHardwarePriority0Inline_256DirectColor_16x16(
-                BGMode, bg, sub, depth);
+                BGMode, bg, sub, depth0, depth1);
     }
 }
 
 
-//-------------------------------------------------------------------
-// Draw all priority 1 tiles.
-//-------------------------------------------------------------------
-
-inline void __attribute__((always_inline)) S9xDrawBackgroundHardwarePriority1Inline (
-    int tileSize, int tileShift, int bitShift, int paletteShift, int paletteMask, int startPalette, bool directColourMode,
-    uint32 BGMode, uint32 bg, bool sub, int depth)
-{
-    GFX.PixSize = 1;
-
-	S9xComputeAndEnableStencilFunction(bg, sub);
-
-    BG.TileSize = tileSize;
-    BG.BitShift = bitShift;
-    BG.TileShift = tileShift;
-    BG.TileAddress = PPU.BG[bg].NameBase << 1;
-    BG.NameSelect = 0;
-    BG.Buffer = IPPU.TileCache [Depths [BGMode][bg]];
-    BG.Buffered = IPPU.TileCached [Depths [BGMode][bg]];
-    BG.PaletteShift = paletteShift;
-    BG.PaletteMask = paletteMask;
-    BG.DirectColourMode = directColourMode;
-	BG.Depth = depth;
-
-	curBG = bg;
-
-    if (BGMode == 0)
-		BG.StartPalette = startPalette;
-    else BG.StartPalette = 0;
-
-	for (int i = 0; i < BG.DrawTileCount[bg]; i++)
-	{
-		if (BG.DrawTileParameters[bg][i][0] == 0)
-		{
-			// unclipped tile.
-			S9xDrawBGTileHardwareInline (
-                tileSize, tileShift, paletteShift, paletteMask, startPalette, directColourMode,
-				BG.DrawTileParameters[bg][i][1], BG.DrawTileParameters[bg][i][2],
-				BG.DrawTileParameters[bg][i][3], BG.DrawTileParameters[bg][i][4]);
-		}
-		else if (BG.DrawTileParameters[bg][i][0] == 1)
-		{
-			// clipped tile.
-			S9xDrawBGClippedTileHardwareInline (
-                tileSize, tileShift, paletteShift, paletteMask, startPalette, directColourMode,
-				BG.DrawTileParameters[bg][i][1], BG.DrawTileParameters[bg][i][2], BG.DrawTileParameters[bg][i][3],
-				BG.DrawTileParameters[bg][i][4], BG.DrawTileParameters[bg][i][5], BG.DrawTileParameters[bg][i][6]);
-		}
-		else if (BG.DrawTileParameters[bg][i][0] == 2)
-		{
-			// clipped tile.
-			S9xDrawBGFullTileHardwareInline (
-                tileSize, tileShift, paletteShift, paletteMask, startPalette, directColourMode,
-				BG.DrawTileParameters[bg][i][1], BG.DrawTileParameters[bg][i][2], BG.DrawTileParameters[bg][i][3],
-				BG.DrawTileParameters[bg][i][4], BG.DrawTileParameters[bg][i][5]);
-		}
-	}
-
-	gpu3dsBindTextureSnesTileCache(GPU_TEXUNIT0);
-	gpu3dsEnableAlphaTestNotEqualsZero();
-	gpu3dsDrawVertexes();
-}
 
 //-------------------------------------------------------------------
 // Draw non-offset-per-tile backgrounds
 //-------------------------------------------------------------------
 inline void __attribute__((always_inline)) S9xDrawBackgroundHardwarePriority0Inline (
     int tileSize, int tileShift, int bitShift, int paletteShift, int paletteMask, int startPalette, bool directColourMode,
-    uint32 BGMode, uint32 bg, bool sub, int depth)
+    uint32 BGMode, uint32 bg, bool sub, int depth0, int depth1)
 {
     GFX.PixSize = 1;
 
@@ -1769,6 +1604,21 @@ inline void __attribute__((always_inline)) S9xDrawBackgroundHardwarePriority0Inl
 
 	//printf ("BG%d Y=%d-%d W1:%d-%d W2:%d-%d\n", bg, GFX.StartY, GFX.EndY, PPU.Window1Left, PPU.Window1Right, PPU.Window2Left, PPU.Window2Right);
 
+	// Note: We draw subscreens first, then the main screen.
+	// So if the subscreen has already been drawn, and we are drawing the main screen,
+	// we simply just redraw the same vertices that we have saved.
+	//
+	if (layerDrawn[bg])
+	{
+		gpu3dsBindTextureSnesTileCache(GPU_TEXUNIT0);
+		gpu3dsSetTextureEnvironmentReplaceTexture0WithColorAlpha();
+		gpu3dsEnableAlphaTestNotEqualsZero();
+		gpu3dsEnableDepthTest();
+		//printf ("Redraw: %d (%s)\n", bg, sub ? "sub" : "main");
+		gpu3dsDrawVertexes(true, bg);	// redraw saved vertices
+		return;
+	}
+
     BG.TileSize = tileSize;
     BG.BitShift = bitShift;
     BG.TileShift = tileShift;
@@ -1779,9 +1629,9 @@ inline void __attribute__((always_inline)) S9xDrawBackgroundHardwarePriority0Inl
     BG.PaletteShift = paletteShift;
     BG.PaletteMask = paletteMask;
     BG.DirectColourMode = directColourMode;
-	BG.Depth = depth;
+	//BG.Depth = depth;
 
-	BG.DrawTileCount[bg] = 0;
+	//BG.DrawTileCount[bg] = 0;
 
 	curBG = bg;
 
@@ -1899,7 +1749,7 @@ inline void __attribute__((always_inline)) S9xDrawBackgroundHardwarePriority0Inl
 
 
 			//uint32 s = Left * GFX.PixSize + Y * GFX.PPL;
-			uint32 s = Left * GFX.PixSize + Y * 256;		// Once hardcoded, Hires mode no longer supported.
+			uint32 s = Left * GFX.PixSize + Y * 256;	
 			//printf ("s = %d, Lines = %d\n", s, Lines);
 			uint32 HPos = (HOffset + Left) & OffsetMask;
 
@@ -1952,22 +1802,24 @@ inline void __attribute__((always_inline)) S9xDrawBackgroundHardwarePriority0Inl
 							if (Tile & V_FLIP)
 							{
 								// Both horzontal & vertical flip
-								if (tpriority == 0)
+								//if (tpriority == 0)
                                     S9xDrawBGFullTileHardwareInline (
                                         tileSize, tileShift, paletteShift, paletteMask, startPalette, directColourMode,
+										tpriority, depth0, depth1,
                                         Tile + t2 + 1 - (Quot & 1), sX, sY, VirtAlign, Lines);
-								else
-									DrawFullTileLater (Tile + t2 + 1 - (Quot & 1), sX, sY, VirtAlign, Lines);
+								//else
+								//	DrawFullTileLater (Tile + t2 + 1 - (Quot & 1), sX, sY, VirtAlign, Lines);
 							}
 							else
 							{
 								// Horizontal flip only
-								if (tpriority == 0)
+								//if (tpriority == 0)
                                     S9xDrawBGFullTileHardwareInline (
                                         tileSize, tileShift, paletteShift, paletteMask, startPalette, directColourMode,
+										tpriority, depth0, depth1,
                                         Tile + t1 + 1 - (Quot & 1), sX, sY, VirtAlign, Lines);
-								else
-									DrawFullTileLater (Tile + t1 + 1 - (Quot & 1), sX, sY, VirtAlign, Lines);
+								//else
+								//	DrawFullTileLater (Tile + t1 + 1 - (Quot & 1), sX, sY, VirtAlign, Lines);
 							}
 						}
 						else
@@ -1976,33 +1828,36 @@ inline void __attribute__((always_inline)) S9xDrawBackgroundHardwarePriority0Inl
 							if (Tile & V_FLIP)
 							{
 								// Vertical flip only
-								if (tpriority == 0)
+								//if (tpriority == 0)
                                     S9xDrawBGFullTileHardwareInline (
                                         tileSize, tileShift, paletteShift, paletteMask, startPalette, directColourMode,
+										tpriority, depth0, depth1,
                                         Tile + t2 + (Quot & 1), sX, sY, VirtAlign, Lines);
-								else
-									DrawFullTileLater (Tile + t2 + (Quot & 1), sX, sY, VirtAlign, Lines);
+								//else
+								//	DrawFullTileLater (Tile + t2 + (Quot & 1), sX, sY, VirtAlign, Lines);
 							}
 							else
 							{
 								// Normal unflipped
-								if (tpriority == 0)
+								//if (tpriority == 0)
                                     S9xDrawBGFullTileHardwareInline (
                                         tileSize, tileShift, paletteShift, paletteMask, startPalette, directColourMode,
+										tpriority, depth0, depth1,
                                         Tile + t1 + (Quot & 1), sX, sY, VirtAlign, Lines);
-								else
-									DrawFullTileLater (Tile + t1 + (Quot & 1), sX, sY, VirtAlign, Lines);
+								//else
+								//	DrawFullTileLater (Tile + t1 + (Quot & 1), sX, sY, VirtAlign, Lines);
 							}
 						}
 					}
 					else
 					{
-						if (tpriority == 0)
+						//if (tpriority == 0)
 							S9xDrawBGFullTileHardwareInline (
                                 tileSize, tileShift, paletteShift, paletteMask, startPalette, directColourMode,
+								tpriority, depth0, depth1,
                                 Tile, sX, sY, VirtAlign, Lines);
-						else
-							DrawFullTileLater (Tile, sX, sY, VirtAlign, Lines);
+						//else
+						//	DrawFullTileLater (Tile, sX, sY, VirtAlign, Lines);
 					}
 				}
 
@@ -2030,9 +1885,14 @@ inline void __attribute__((always_inline)) S9xDrawBackgroundHardwarePriority0Inl
     }
 
 	//printf ("BG %d P0\n", bg);
+	//gpu3dsSetTextureEnvironmentReplaceTexture0();
 	gpu3dsBindTextureSnesTileCache(GPU_TEXUNIT0);
+	gpu3dsSetTextureEnvironmentReplaceTexture0WithColorAlpha();
 	gpu3dsEnableAlphaTestNotEqualsZero();
-	gpu3dsDrawVertexes();
+	gpu3dsEnableDepthTest();
+	//printf ("Draw  : %d (%s)\n", bg, sub ? "sub" : "main");
+	gpu3dsDrawVertexes(false, bg);
+	layerDrawn[bg] = true;
 }
 
 
@@ -2041,7 +1901,7 @@ inline void __attribute__((always_inline)) S9xDrawBackgroundHardwarePriority0Inl
 //-------------------------------------------------------------------
 
 void S9xDrawBackgroundHardwarePriority0Inline_4Color_8x8
-    (uint32 BGMode, uint32 bg, bool sub, int depth)
+    (uint32 BGMode, uint32 bg, bool sub, int depth0, int depth1)
 {
     S9xDrawBackgroundHardwarePriority0Inline(
         8,              // tileSize
@@ -2051,11 +1911,11 @@ void S9xDrawBackgroundHardwarePriority0Inline_4Color_8x8
         7,              // paletteMask
         0,              // startPalette
         FALSE,          // directColourMode
-        BGMode, bg, sub, depth);
+        BGMode, bg, sub, depth0, depth1);
 }
 
 void S9xDrawBackgroundHardwarePriority0Inline_4Color_16x16
-    (uint32 BGMode, uint32 bg, bool sub, int depth)
+    (uint32 BGMode, uint32 bg, bool sub, int depth0, int depth1)
 {
     S9xDrawBackgroundHardwarePriority0Inline(
         16,             // tileSize
@@ -2065,11 +1925,11 @@ void S9xDrawBackgroundHardwarePriority0Inline_4Color_16x16
         7,              // paletteMask
         0,              // startPalette
         FALSE,          // directColourMode
-        BGMode, bg, sub, depth);
+        BGMode, bg, sub, depth0, depth1);
 }
 
 void S9xDrawBackgroundHardwarePriority0Inline_Mode0_4Color_8x8
-    (uint32 BGMode, uint32 bg, bool sub, int depth)
+    (uint32 BGMode, uint32 bg, bool sub, int depth0, int depth1)
 {
     S9xDrawBackgroundHardwarePriority0Inline(
         8,              // tileSize
@@ -2079,11 +1939,11 @@ void S9xDrawBackgroundHardwarePriority0Inline_Mode0_4Color_8x8
         7,              // paletteMask
         bg << 5,        // startPalette
         FALSE,          // directColourMode
-        BGMode, bg, sub, depth);
+        BGMode, bg, sub, depth0, depth1);
 }
 
 void S9xDrawBackgroundHardwarePriority0Inline_Mode0_4Color_16x16
-    (uint32 BGMode, uint32 bg, bool sub, int depth)
+    (uint32 BGMode, uint32 bg, bool sub, int depth0, int depth1)
 {
     S9xDrawBackgroundHardwarePriority0Inline(
         16,             // tileSize
@@ -2093,118 +1953,33 @@ void S9xDrawBackgroundHardwarePriority0Inline_Mode0_4Color_16x16
         7,              // paletteMask
         bg << 5,        // startPalette
         FALSE,          // directColourMode
-        BGMode, bg, sub, depth);
+        BGMode, bg, sub, depth0, depth1);
 }
 
 
 void S9xDrawBackgroundHardwarePriority0Inline_4Color
-    (uint32 BGMode, uint32 bg, bool sub, int depth)
+    (uint32 BGMode, uint32 bg, bool sub, int depth0, int depth1)
 {
     if (BGMode != 0)
     {
         if (BGSizes [PPU.BG[bg].BGSize] == 8)
             S9xDrawBackgroundHardwarePriority0Inline_4Color_8x8(
-                BGMode, bg, sub, depth);
+                BGMode, bg, sub, depth0, depth1);
         else
             S9xDrawBackgroundHardwarePriority0Inline_4Color_16x16(
-                BGMode, bg, sub, depth);
+                BGMode, bg, sub, depth0, depth1);
     }
     else
     {
         if (BGSizes [PPU.BG[bg].BGSize] == 8)
             S9xDrawBackgroundHardwarePriority0Inline_Mode0_4Color_8x8(
-                BGMode, bg, sub, depth);
+                BGMode, bg, sub, depth0, depth1);
         else
             S9xDrawBackgroundHardwarePriority0Inline_Mode0_4Color_16x16(
-                BGMode, bg, sub, depth);
+                BGMode, bg, sub, depth0, depth1);
     }
 }
 
-
-//-------------------------------------------------------------------
-// 4-color BGs, priority 1
-//-------------------------------------------------------------------
-
-void S9xDrawBackgroundHardwarePriority1Inline_4Color_8x8
-    (uint32 BGMode, uint32 bg, bool sub, int depth)
-{
-    S9xDrawBackgroundHardwarePriority1Inline(
-        8,              // tileSize
-        4,              // tileShift
-		2,				// bitShift
-        2,              // paletteShift
-        7,              // paletteMask
-        0,              // startPalette
-        FALSE,          // directColourMode
-        BGMode, bg, sub, depth);
-}
-
-void S9xDrawBackgroundHardwarePriority1Inline_4Color_16x16
-    (uint32 BGMode, uint32 bg, bool sub, int depth)
-{
-    S9xDrawBackgroundHardwarePriority1Inline(
-        16,             // tileSize
-        4,              // tileShift
-		2,				// bitShift
-        2,              // paletteShift
-        7,              // paletteMask
-        0,              // startPalette
-        FALSE,          // directColourMode
-        BGMode, bg, sub, depth);
-}
-
-
-void S9xDrawBackgroundHardwarePriority1Inline_Mode0_4Color_8x8
-    (uint32 BGMode, uint32 bg, bool sub, int depth)
-{
-    S9xDrawBackgroundHardwarePriority1Inline(
-        8,              // tileSize
-        4,              // tileShift
-		2,				// bitShift
-        2,              // paletteShift
-        7,              // paletteMask
-        bg << 5,        // startPalette
-        FALSE,          // directColourMode
-        BGMode, bg, sub, depth);
-}
-
-void S9xDrawBackgroundHardwarePriority1Inline_Mode0_4Color_16x16
-    (uint32 BGMode, uint32 bg, bool sub, int depth)
-{
-    S9xDrawBackgroundHardwarePriority1Inline(
-        16,             // tileSize
-        4,              // tileShift
-		2,				// bitShift
-        2,              // paletteShift
-        7,              // paletteMask
-        bg << 5,        // startPalette
-        FALSE,          // directColourMode
-        BGMode, bg, sub, depth);
-}
-
-
-void S9xDrawBackgroundHardwarePriority1Inline_4Color
-    (uint32 BGMode, uint32 bg, bool sub, int depth)
-{
-    if (BGMode != 0)
-    {
-        if (BGSizes [PPU.BG[bg].BGSize] == 8)
-            S9xDrawBackgroundHardwarePriority1Inline_4Color_8x8(
-                BGMode, bg, sub, depth);
-        else
-            S9xDrawBackgroundHardwarePriority1Inline_4Color_16x16(
-                BGMode, bg, sub, depth);
-    }
-    else
-    {
-        if (BGSizes [PPU.BG[bg].BGSize] == 8)
-            S9xDrawBackgroundHardwarePriority1Inline_Mode0_4Color_8x8(
-                BGMode, bg, sub, depth);
-        else
-            S9xDrawBackgroundHardwarePriority1Inline_Mode0_4Color_16x16(
-                BGMode, bg, sub, depth);
-    }
-}
 
 
 //-------------------------------------------------------------------
@@ -2212,7 +1987,7 @@ void S9xDrawBackgroundHardwarePriority1Inline_4Color
 //-------------------------------------------------------------------
 
 void S9xDrawBackgroundHardwarePriority0Inline_16Color_8x8
-    (uint32 BGMode, uint32 bg, bool sub, int depth)
+    (uint32 BGMode, uint32 bg, bool sub, int depth0, int depth1)
 {
     S9xDrawBackgroundHardwarePriority0Inline(
         8,              // tileSize
@@ -2222,11 +1997,11 @@ void S9xDrawBackgroundHardwarePriority0Inline_16Color_8x8
         7,              // paletteMask
         0,              // startPalette
         FALSE,          // directColourMode
-        BGMode, bg, sub, depth);
+        BGMode, bg, sub, depth0, depth1);
 }
 
 void S9xDrawBackgroundHardwarePriority0Inline_16Color_16x16
-    (uint32 BGMode, uint32 bg, bool sub, int depth)
+    (uint32 BGMode, uint32 bg, bool sub, int depth0, int depth1)
 {
     S9xDrawBackgroundHardwarePriority0Inline(
         16,             // tileSize
@@ -2236,70 +2011,21 @@ void S9xDrawBackgroundHardwarePriority0Inline_16Color_16x16
         7,              // paletteMask
         0,              // startPalette
         FALSE,          // directColourMode
-        BGMode, bg, sub, depth);
+        BGMode, bg, sub, depth0, depth1);
 }
 
 void S9xDrawBackgroundHardwarePriority0Inline_16Color
-    (uint32 BGMode, uint32 bg, bool sub, int depth)
+    (uint32 BGMode, uint32 bg, bool sub, int depth0, int depth1)
 {
     if (BGSizes [PPU.BG[bg].BGSize] == 8)
     {
         S9xDrawBackgroundHardwarePriority0Inline_16Color_8x8(
-            BGMode, bg, sub, depth);
+            BGMode, bg, sub, depth0, depth1);
     }
     else
     {
         S9xDrawBackgroundHardwarePriority0Inline_16Color_16x16(
-            BGMode, bg, sub, depth);
-    }
-}
-
-
-//-------------------------------------------------------------------
-// 16-color BGs, priority 1
-//-------------------------------------------------------------------
-
-void S9xDrawBackgroundHardwarePriority1Inline_16Color_8x8
-    (uint32 BGMode, uint32 bg, bool sub, int depth)
-{
-    S9xDrawBackgroundHardwarePriority1Inline(
-        8,              // tileSize
-        5,              // tileShift
-		4,				// bitShift
-        4,              // paletteShift
-        7,              // paletteMask
-        0,              // startPalette
-        FALSE,          // directColourMode
-        BGMode, bg, sub, depth);
-}
-
-void S9xDrawBackgroundHardwarePriority1Inline_16Color_16x16
-    (uint32 BGMode, uint32 bg, bool sub, int depth)
-{
-    S9xDrawBackgroundHardwarePriority1Inline(
-        16,             // tileSize
-        5,              // tileShift
-		4,				// bitShift
-        4,              // paletteShift
-        7,              // paletteMask
-        0,              // startPalette
-        FALSE,          // directColourMode
-        BGMode, bg, sub, depth);
-}
-
-void S9xDrawBackgroundHardwarePriority1Inline_16Color
-    (uint32 BGMode, uint32 bg, bool sub, int depth)
-{
-
-    if (BGSizes [PPU.BG[bg].BGSize] == 8)
-    {
-        S9xDrawBackgroundHardwarePriority1Inline_16Color_8x8(
-            BGMode, bg, sub, depth);
-    }
-    else
-    {
-        S9xDrawBackgroundHardwarePriority1Inline_16Color_16x16(
-            BGMode, bg, sub, depth);
+            BGMode, bg, sub, depth0, depth1);
     }
 }
 
@@ -2310,7 +2036,7 @@ void S9xDrawBackgroundHardwarePriority1Inline_16Color
 //-------------------------------------------------------------------
 
 void S9xDrawBackgroundHardwarePriority0Inline_256NormalColor_8x8
-    (uint32 BGMode, uint32 bg, bool sub, int depth)
+    (uint32 BGMode, uint32 bg, bool sub, int depth0, int depth1)
 {
     S9xDrawBackgroundHardwarePriority0Inline(
         8,              // tileSize
@@ -2320,11 +2046,11 @@ void S9xDrawBackgroundHardwarePriority0Inline_256NormalColor_8x8
         0,              // paletteMask
         0,              // startPalette
         FALSE,          // directColourMode
-        BGMode, bg, sub, depth);
+        BGMode, bg, sub, depth0, depth1);
 }
 
 void S9xDrawBackgroundHardwarePriority0Inline_256NormalColor_16x16
-    (uint32 BGMode, uint32 bg, bool sub, int depth)
+    (uint32 BGMode, uint32 bg, bool sub, int depth0, int depth1)
 {
     S9xDrawBackgroundHardwarePriority0Inline(
         16,             // tileSize
@@ -2334,11 +2060,11 @@ void S9xDrawBackgroundHardwarePriority0Inline_256NormalColor_16x16
         0,              // paletteMask
         0,              // startPalette
         FALSE,          // directColourMode
-        BGMode, bg, sub, depth);
+        BGMode, bg, sub, depth0, depth1);
 }
 
 void S9xDrawBackgroundHardwarePriority0Inline_256DirectColor_8x8
-    (uint32 BGMode, uint32 bg, bool sub, int depth)
+    (uint32 BGMode, uint32 bg, bool sub, int depth0, int depth1)
 {
     S9xDrawBackgroundHardwarePriority0Inline(
         8,              // tileSize
@@ -2348,11 +2074,11 @@ void S9xDrawBackgroundHardwarePriority0Inline_256DirectColor_8x8
         0,              // paletteMask
         0,              // startPalette
         TRUE,          // directColourMode
-        BGMode, bg, sub, depth);
+        BGMode, bg, sub, depth0, depth1);
 }
 
 void S9xDrawBackgroundHardwarePriority0Inline_256DirectColor_16x16
-    (uint32 BGMode, uint32 bg, bool sub, int depth)
+    (uint32 BGMode, uint32 bg, bool sub, int depth0, int depth1)
 {
     S9xDrawBackgroundHardwarePriority0Inline(
         16,             // tileSize
@@ -2362,160 +2088,30 @@ void S9xDrawBackgroundHardwarePriority0Inline_256DirectColor_16x16
         0,              // paletteMask
         0,              // startPalette
         TRUE,          // directColourMode
-        BGMode, bg, sub, depth);
+        BGMode, bg, sub, depth0, depth1);
 }
 
 void S9xDrawBackgroundHardwarePriority0Inline_256Color
-    (uint32 BGMode, uint32 bg, bool sub, int depth)
+    (uint32 BGMode, uint32 bg, bool sub, int depth0, int depth1)
 {
     if (BGSizes [PPU.BG[bg].BGSize] == 8)
     {
         if (!(GFX.r2130 & 1))
             S9xDrawBackgroundHardwarePriority0Inline_256NormalColor_8x8(
-                BGMode, bg, sub, depth);
+                BGMode, bg, sub, depth0, depth1);
         else
             S9xDrawBackgroundHardwarePriority0Inline_256DirectColor_8x8(
-                BGMode, bg, sub, depth);
+                BGMode, bg, sub, depth0, depth1);
     }
     else
     {
         if (!(GFX.r2130 & 1))
             S9xDrawBackgroundHardwarePriority0Inline_256NormalColor_16x16(
-                BGMode, bg, sub, depth);
+                BGMode, bg, sub, depth0, depth1);
         else
             S9xDrawBackgroundHardwarePriority0Inline_256DirectColor_16x16(
-                BGMode, bg, sub, depth);
+                BGMode, bg, sub, depth0, depth1);
     }
-}
-
-
-//-------------------------------------------------------------------
-// 256-color BGs, priority 1
-//-------------------------------------------------------------------
-
-void S9xDrawBackgroundHardwarePriority1Inline_256NormalColor_8x8
-    (uint32 BGMode, uint32 bg, bool sub, int depth)
-{
-    S9xDrawBackgroundHardwarePriority1Inline(
-        8,              // tileSize
-        6,              // tileShift
-		8,				// bitShift
-        0,              // paletteShift
-        0,              // paletteMask
-        0,              // startPalette
-        FALSE,          // directColourMode
-        BGMode, bg, sub, depth);
-}
-
-void S9xDrawBackgroundHardwarePriority1Inline_256NormalColor_16x16
-    (uint32 BGMode, uint32 bg, bool sub, int depth)
-{
-    S9xDrawBackgroundHardwarePriority1Inline(
-        16,             // tileSize
-        6,              // tileShift
-		8,				// bitShift
-        0,              // paletteShift
-        0,              // paletteMask
-        0,              // startPalette
-        FALSE,          // directColourMode
-        BGMode, bg, sub, depth);
-}
-
-void S9xDrawBackgroundHardwarePriority1Inline_256DirectColor_8x8
-    (uint32 BGMode, uint32 bg, bool sub, int depth)
-{
-    S9xDrawBackgroundHardwarePriority1Inline(
-        8,              // tileSize
-        6,              // tileShift
-		8,				// bitShift
-        0,              // paletteShift
-        0,              // paletteMask
-        0,              // startPalette
-        TRUE,          // directColourMode
-        BGMode, bg, sub, depth);
-}
-
-void S9xDrawBackgroundHardwarePriority1Inline_256DirectColor_16x16
-    (uint32 BGMode, uint32 bg, bool sub, int depth)
-{
-    S9xDrawBackgroundHardwarePriority1Inline(
-        16,             // tileSize
-        6,              // tileShift
-		8,				// bitShift
-        0,              // paletteShift
-        0,              // paletteMask
-        0,              // startPalette
-        TRUE,          // directColourMode
-        BGMode, bg, sub, depth);
-}
-
-void S9xDrawBackgroundHardwarePriority1Inline_256Color
-    (uint32 BGMode, uint32 bg, bool sub, int depth)
-{
-    if (BGSizes [PPU.BG[bg].BGSize] == 8)
-    {
-        if (GFX.r2130 & 1)
-            S9xDrawBackgroundHardwarePriority1Inline_256NormalColor_8x8(
-                BGMode, bg, sub, depth);
-        else
-            S9xDrawBackgroundHardwarePriority1Inline_256DirectColor_8x8(
-                BGMode, bg, sub, depth);
-    }
-    else
-    {
-        if (GFX.r2130 & 1)
-            S9xDrawBackgroundHardwarePriority1Inline_256NormalColor_16x16(
-                BGMode, bg, sub, depth);
-        else
-            S9xDrawBackgroundHardwarePriority1Inline_256DirectColor_16x16(
-                BGMode, bg, sub, depth);
-    }
-}
-
-
-
-//-------------------------------------------------------------------
-// Draw all hires priority 1 tiles.
-//-------------------------------------------------------------------
-
-inline void __attribute__((always_inline)) S9xDrawHiresBackgroundHardwarePriority1Inline (
-    int tileSize, int tileShift, int bitShift, int paletteShift, int paletteMask, int startPalette, bool directColourMode,
-    uint32 BGMode, uint32 bg, bool sub, int depth)
-{
-    GFX.PixSize = 1;
-
-	S9xComputeAndEnableStencilFunction(bg, sub);
-
-    BG.TileSize = tileSize;
-    BG.BitShift = bitShift;
-    BG.TileShift = tileShift;
-    BG.TileAddress = PPU.BG[bg].NameBase << 1;
-    BG.NameSelect = 0;
-    BG.Buffer = IPPU.TileCache [Depths [BGMode][bg]];
-    BG.Buffered = IPPU.TileCached [Depths [BGMode][bg]];
-    BG.PaletteShift = paletteShift;
-    BG.PaletteMask = paletteMask;
-    BG.DirectColourMode = directColourMode;
-	BG.Depth = depth;
-
-	curBG = bg;
-
-    if (BGMode == 0)
-		BG.StartPalette = startPalette;
-    else BG.StartPalette = 0;
-
-	for (int i = 0; i < BG.DrawTileCount[bg]; i++)
-	{
-		// clipped tile.
-		S9xDrawHiresBGFullTileHardwareInline (
-			tileSize, tileShift, paletteShift, paletteMask, startPalette, directColourMode,
-			BG.DrawTileParameters[bg][i][1], BG.DrawTileParameters[bg][i][2], BG.DrawTileParameters[bg][i][3],
-			BG.DrawTileParameters[bg][i][4], BG.DrawTileParameters[bg][i][5]);
-	}
-
-	gpu3dsBindTextureSnesTileCacheForHires(GPU_TEXUNIT0);
-	gpu3dsEnableAlphaTestNotEqualsZero();
-	gpu3dsDrawVertexes();
 }
 
 
@@ -2524,11 +2120,25 @@ inline void __attribute__((always_inline)) S9xDrawHiresBackgroundHardwarePriorit
 //-------------------------------------------------------------------
 inline void __attribute__((always_inline)) S9xDrawHiresBackgroundHardwarePriority0Inline (
     int tileSize, int tileShift, int bitShift, int paletteShift, int paletteMask, int startPalette, bool directColourMode,
-    uint32 BGMode, uint32 bg, bool sub, int depth)
+    uint32 BGMode, uint32 bg, bool sub, int depth0, int depth1)
 {
     GFX.PixSize = 1;
 
 	S9xComputeAndEnableStencilFunction(bg, sub);
+
+ 	// Note: We draw subscreens first, then the main screen.
+	// So if the subscreen has already been drawn, and we are drawing the main screen,
+	// we simply just redraw the same vertices that we have saved.
+	//
+	if (layerDrawn[bg])
+	{
+		gpu3dsBindTextureSnesTileCacheForHires(GPU_TEXUNIT0);
+		gpu3dsSetTextureEnvironmentReplaceTexture0WithColorAlpha();
+		gpu3dsEnableAlphaTestNotEqualsZero();
+		gpu3dsEnableDepthTest();
+		gpu3dsDrawVertexes(true, bg);
+		return;		
+	}
 
 	//printf ("BG%d Y=%d-%d W1:%d-%d W2:%d-%d\n", bg, GFX.StartY, GFX.EndY, PPU.Window1Left, PPU.Window1Right, PPU.Window2Left, PPU.Window2Right);
 
@@ -2542,9 +2152,9 @@ inline void __attribute__((always_inline)) S9xDrawHiresBackgroundHardwarePriorit
     BG.PaletteShift = paletteShift;
     BG.PaletteMask = paletteMask;
     BG.DirectColourMode = directColourMode;
-	BG.Depth = depth;
+	//BG.Depth = depth;
 
-	BG.DrawTileCount[bg] = 0;
+	//BG.DrawTileCount[bg] = 0;
 
 	curBG = bg;
 
@@ -2703,12 +2313,13 @@ inline void __attribute__((always_inline)) S9xDrawHiresBackgroundHardwarePriorit
 					{
 						if (!(Tile & H_FLIP))
 						{
-							if (tpriority == 0)
+							//if (tpriority == 0)
 								S9xDrawHiresBGFullTileHardwareInline (
 									tileSize, tileShift, paletteShift, paletteMask, startPalette, directColourMode,
+									tpriority, depth0, depth1,
 									Tile + (Quot & 1), sX, sY, VirtAlign, actualLines);
-							else
-									DrawFullTileLater (Tile + (Quot & 1), sX, sY, VirtAlign, actualLines);
+							//else
+							//		DrawFullTileLater (Tile + (Quot & 1), sX, sY, VirtAlign, actualLines);
 							
 							// Normal, unflipped
 							//(*DrawHiResTilePtr) (Tile + (Quot & 1),
@@ -2716,12 +2327,13 @@ inline void __attribute__((always_inline)) S9xDrawHiresBackgroundHardwarePriorit
 						}
 						else
 						{
-							if (tpriority == 0)
+							//if (tpriority == 0)
 								S9xDrawHiresBGFullTileHardwareInline (
 									tileSize, tileShift, paletteShift, paletteMask, startPalette, directColourMode,
+									tpriority, depth0, depth1,
 									Tile + 1 - (Quot & 1), sX, sY, VirtAlign, actualLines);
-							else
-									DrawFullTileLater (Tile + 1 - (Quot & 1), sX, sY, VirtAlign, actualLines);
+							//else
+							//		DrawFullTileLater (Tile + 1 - (Quot & 1), sX, sY, VirtAlign, actualLines);
 
 							// H flip
 							//(*DrawHiResTilePtr) (Tile + 1 - (Quot & 1),
@@ -2732,12 +2344,13 @@ inline void __attribute__((always_inline)) S9xDrawHiresBackgroundHardwarePriorit
 					{
 						if (!(Tile & (V_FLIP | H_FLIP)))
 						{
-							if (tpriority == 0)
+							//if (tpriority == 0)
 								S9xDrawHiresBGFullTileHardwareInline (
 									tileSize, tileShift, paletteShift, paletteMask, startPalette, directColourMode,
+									tpriority, depth0, depth1,
 									Tile + t1 + (Quot & 1), sX, sY, VirtAlign, actualLines);
-							else
-									DrawFullTileLater (Tile + t1 + (Quot & 1), sX, sY, VirtAlign, actualLines);
+							//else
+							//		DrawFullTileLater (Tile + t1 + (Quot & 1), sX, sY, VirtAlign, actualLines);
 							
 							// Normal, unflipped
 							//(*DrawHiResTilePtr) (Tile + t1 + (Quot & 1),
@@ -2748,12 +2361,13 @@ inline void __attribute__((always_inline)) S9xDrawHiresBackgroundHardwarePriorit
 							{
 								if (Tile & V_FLIP)
 								{
-									if (tpriority == 0)
+									//if (tpriority == 0)
 										S9xDrawHiresBGFullTileHardwareInline (
 											tileSize, tileShift, paletteShift, paletteMask, startPalette, directColourMode,
+											tpriority, depth0, depth1,
 											Tile + t2 + 1 - (Quot & 1), sX, sY, VirtAlign, actualLines);
-									else
-											DrawFullTileLater (Tile + t2 + 1 - (Quot & 1), sX, sY, VirtAlign, actualLines);
+									//else
+									//		DrawFullTileLater (Tile + t2 + 1 - (Quot & 1), sX, sY, VirtAlign, actualLines);
 									
 									// H & V flip
 									//(*DrawHiResTilePtr) (Tile + t2 + 1 - (Quot & 1),
@@ -2761,12 +2375,13 @@ inline void __attribute__((always_inline)) S9xDrawHiresBackgroundHardwarePriorit
 								}
 								else
 								{
-									if (tpriority == 0)
+									//if (tpriority == 0)
 										S9xDrawHiresBGFullTileHardwareInline (
 											tileSize, tileShift, paletteShift, paletteMask, startPalette, directColourMode,
+											tpriority, depth0, depth1,
 											Tile + t1 + 1 - (Quot & 1), sX, sY, VirtAlign, actualLines);
-									else
-											DrawFullTileLater (Tile + t1 + 1 - (Quot & 1), sX, sY, VirtAlign, actualLines);
+									//else
+									//		DrawFullTileLater (Tile + t1 + 1 - (Quot & 1), sX, sY, VirtAlign, actualLines);
 
 									// H flip only
 									//(*DrawHiResTilePtr) (Tile + t1 + 1 - (Quot & 1),
@@ -2775,12 +2390,13 @@ inline void __attribute__((always_inline)) S9xDrawHiresBackgroundHardwarePriorit
 							}
 							else
 							{
-								if (tpriority == 0)
+								//if (tpriority == 0)
 									S9xDrawHiresBGFullTileHardwareInline (
 										tileSize, tileShift, paletteShift, paletteMask, startPalette, directColourMode,
+										tpriority, depth0, depth1,
 										Tile + t2 + (Quot & 1), sX, sY, VirtAlign, actualLines);
-								else
-										DrawFullTileLater (Tile + t2 + (Quot & 1), sX, sY, VirtAlign, actualLines);
+								//else
+								//		DrawFullTileLater (Tile + t2 + (Quot & 1), sX, sY, VirtAlign, actualLines);
 								
 								// V flip only
 								//(*DrawHiResTilePtr) (Tile + t2 + (Quot & 1),
@@ -2801,9 +2417,13 @@ inline void __attribute__((always_inline)) S9xDrawHiresBackgroundHardwarePriorit
     }
 
 	//printf ("BG %d P0\n", bg);
+	//gpu3dsSetTextureEnvironmentReplaceTexture0();
 	gpu3dsBindTextureSnesTileCacheForHires(GPU_TEXUNIT0);
+	gpu3dsSetTextureEnvironmentReplaceTexture0WithColorAlpha();
 	gpu3dsEnableAlphaTestNotEqualsZero();
-	gpu3dsDrawVertexes();
+	gpu3dsEnableDepthTest();
+	gpu3dsDrawVertexes(false, bg);
+	layerDrawn[bg] = true;
 }
 
 
@@ -2814,7 +2434,7 @@ inline void __attribute__((always_inline)) S9xDrawHiresBackgroundHardwarePriorit
 //-------------------------------------------------------------------
 
 void S9xDrawHiresBackgroundHardwarePriority0Inline_4Color_8x8
-    (uint32 BGMode, uint32 bg, bool sub, int depth)
+    (uint32 BGMode, uint32 bg, bool sub, int depth0, int depth1)
 {
     S9xDrawHiresBackgroundHardwarePriority0Inline(
         8,              // tileSize
@@ -2824,11 +2444,11 @@ void S9xDrawHiresBackgroundHardwarePriority0Inline_4Color_8x8
         7,              // paletteMask
         0,              // startPalette
         FALSE,          // directColourMode
-        BGMode, bg, sub, depth);
+        BGMode, bg, sub, depth0, depth1);
 }
 
 void S9xDrawHiresBackgroundHardwarePriority0Inline_4Color_16x16
-    (uint32 BGMode, uint32 bg, bool sub, int depth)
+    (uint32 BGMode, uint32 bg, bool sub, int depth0, int depth1)
 {
     S9xDrawHiresBackgroundHardwarePriority0Inline(
         16,             // tileSize
@@ -2838,11 +2458,11 @@ void S9xDrawHiresBackgroundHardwarePriority0Inline_4Color_16x16
         7,              // paletteMask
         0,              // startPalette
         FALSE,          // directColourMode
-        BGMode, bg, sub, depth);
+        BGMode, bg, sub, depth0, depth1);
 }
 
 void S9xDrawHiresBackgroundHardwarePriority0Inline_Mode0_4Color_8x8
-    (uint32 BGMode, uint32 bg, bool sub, int depth)
+    (uint32 BGMode, uint32 bg, bool sub, int depth0, int depth1)
 {
     S9xDrawHiresBackgroundHardwarePriority0Inline(
         8,              // tileSize
@@ -2852,11 +2472,11 @@ void S9xDrawHiresBackgroundHardwarePriority0Inline_Mode0_4Color_8x8
         7,              // paletteMask
         bg << 5,        // startPalette
         FALSE,          // directColourMode
-        BGMode, bg, sub, depth);
+        BGMode, bg, sub, depth0, depth1);
 }
 
 void S9xDrawHiresBackgroundHardwarePriority0Inline_Mode0_4Color_16x16
-    (uint32 BGMode, uint32 bg, bool sub, int depth)
+    (uint32 BGMode, uint32 bg, bool sub, int depth0, int depth1)
 {
     S9xDrawHiresBackgroundHardwarePriority0Inline(
         16,             // tileSize
@@ -2866,119 +2486,32 @@ void S9xDrawHiresBackgroundHardwarePriority0Inline_Mode0_4Color_16x16
         7,              // paletteMask
         bg << 5,        // startPalette
         FALSE,          // directColourMode
-        BGMode, bg, sub, depth);
+        BGMode, bg, sub, depth0, depth1);
 }
 
 
 void S9xDrawHiresBackgroundHardwarePriority0Inline_4Color
-    (uint32 BGMode, uint32 bg, bool sub, int depth)
+    (uint32 BGMode, uint32 bg, bool sub, int depth0, int depth1)
 {
     if (BGMode != 0)
     {
         if (BGSizes [PPU.BG[bg].BGSize] == 8)
             S9xDrawHiresBackgroundHardwarePriority0Inline_4Color_8x8(
-                BGMode, bg, sub, depth);
+                BGMode, bg, sub, depth0, depth1);
         else
             S9xDrawHiresBackgroundHardwarePriority0Inline_4Color_16x16(
-                BGMode, bg, sub, depth);
+                BGMode, bg, sub, depth0, depth1);
     }
     else
     {
         if (BGSizes [PPU.BG[bg].BGSize] == 8)
             S9xDrawHiresBackgroundHardwarePriority0Inline_Mode0_4Color_8x8(
-                BGMode, bg, sub, depth);
+                BGMode, bg, sub, depth0, depth1);
         else
             S9xDrawHiresBackgroundHardwarePriority0Inline_Mode0_4Color_16x16(
-                BGMode, bg, sub, depth);
+                BGMode, bg, sub, depth0, depth1);
     }
 }
-
-
-//-------------------------------------------------------------------
-// 4-color BGs, priority 1
-//-------------------------------------------------------------------
-
-void S9xDrawHiresBackgroundHardwarePriority1Inline_4Color_8x8
-    (uint32 BGMode, uint32 bg, bool sub, int depth)
-{
-    S9xDrawHiresBackgroundHardwarePriority1Inline(
-        8,              // tileSize
-        4,              // tileShift
-		2,				// bitShift
-        2,              // paletteShift
-        7,              // paletteMask
-        0,              // startPalette
-        FALSE,          // directColourMode
-        BGMode, bg, sub, depth);
-}
-
-void S9xDrawHiresBackgroundHardwarePriority1Inline_4Color_16x16
-    (uint32 BGMode, uint32 bg, bool sub, int depth)
-{
-    S9xDrawHiresBackgroundHardwarePriority1Inline(
-        16,             // tileSize
-        4,              // tileShift
-		2,				// bitShift
-        2,              // paletteShift
-        7,              // paletteMask
-        0,              // startPalette
-        FALSE,          // directColourMode
-        BGMode, bg, sub, depth);
-}
-
-
-void S9xDrawHiresBackgroundHardwarePriority1Inline_Mode0_4Color_8x8
-    (uint32 BGMode, uint32 bg, bool sub, int depth)
-{
-    S9xDrawHiresBackgroundHardwarePriority1Inline(
-        8,              // tileSize
-        4,              // tileShift
-		2,				// bitShift
-        2,              // paletteShift
-        7,              // paletteMask
-        bg << 5,        // startPalette
-        FALSE,          // directColourMode
-        BGMode, bg, sub, depth);
-}
-
-void S9xDrawHiresBackgroundHardwarePriority1Inline_Mode0_4Color_16x16
-    (uint32 BGMode, uint32 bg, bool sub, int depth)
-{
-    S9xDrawHiresBackgroundHardwarePriority1Inline(
-        16,             // tileSize
-        4,              // tileShift
-		2,				// bitShift
-        2,              // paletteShift
-        7,              // paletteMask
-        bg << 5,        // startPalette
-        FALSE,          // directColourMode
-        BGMode, bg, sub, depth);
-}
-
-
-void S9xDrawHiresBackgroundHardwarePriority1Inline_4Color
-    (uint32 BGMode, uint32 bg, bool sub, int depth)
-{
-    if (BGMode != 0)
-    {
-        if (BGSizes [PPU.BG[bg].BGSize] == 8)
-            S9xDrawHiresBackgroundHardwarePriority1Inline_4Color_8x8(
-                BGMode, bg, sub, depth);
-        else
-            S9xDrawHiresBackgroundHardwarePriority1Inline_4Color_16x16(
-                BGMode, bg, sub, depth);
-    }
-    else
-    {
-        if (BGSizes [PPU.BG[bg].BGSize] == 8)
-            S9xDrawHiresBackgroundHardwarePriority1Inline_Mode0_4Color_8x8(
-                BGMode, bg, sub, depth);
-        else
-            S9xDrawHiresBackgroundHardwarePriority1Inline_Mode0_4Color_16x16(
-                BGMode, bg, sub, depth);
-    }
-}
-
 
 
 //-------------------------------------------------------------------
@@ -2986,7 +2519,7 @@ void S9xDrawHiresBackgroundHardwarePriority1Inline_4Color
 //-------------------------------------------------------------------
 
 void S9xDrawHiresBackgroundHardwarePriority0Inline_16Color_8x8
-    (uint32 BGMode, uint32 bg, bool sub, int depth)
+    (uint32 BGMode, uint32 bg, bool sub, int depth0, int depth1)
 {
     S9xDrawHiresBackgroundHardwarePriority0Inline(
         8,              // tileSize
@@ -2996,11 +2529,11 @@ void S9xDrawHiresBackgroundHardwarePriority0Inline_16Color_8x8
         7,              // paletteMask
         0,              // startPalette
         FALSE,          // directColourMode
-        BGMode, bg, sub, depth);
+        BGMode, bg, sub, depth0, depth1);
 }
 
 void S9xDrawHiresBackgroundHardwarePriority0Inline_16Color_16x16
-    (uint32 BGMode, uint32 bg, bool sub, int depth)
+    (uint32 BGMode, uint32 bg, bool sub, int depth0, int depth1)
 {
     S9xDrawHiresBackgroundHardwarePriority0Inline(
         16,             // tileSize
@@ -3010,162 +2543,31 @@ void S9xDrawHiresBackgroundHardwarePriority0Inline_16Color_16x16
         7,              // paletteMask
         0,              // startPalette
         FALSE,          // directColourMode
-        BGMode, bg, sub, depth);
+        BGMode, bg, sub, depth0, depth1);
 }
 
 void S9xDrawHiresBackgroundHardwarePriority0Inline_16Color
-    (uint32 BGMode, uint32 bg, bool sub, int depth)
+    (uint32 BGMode, uint32 bg, bool sub, int depth0, int depth1)
 {
     if (BGSizes [PPU.BG[bg].BGSize] == 8)
     {
         S9xDrawHiresBackgroundHardwarePriority0Inline_16Color_8x8(
-            BGMode, bg, sub, depth);
+            BGMode, bg, sub, depth0, depth1);
     }
     else
     {
         S9xDrawHiresBackgroundHardwarePriority0Inline_16Color_16x16(
-            BGMode, bg, sub, depth);
+            BGMode, bg, sub, depth0, depth1);
     }
 }
 
 
-//-------------------------------------------------------------------
-// 16-color Hires BGs, priority 1
-//-------------------------------------------------------------------
-
-void S9xDrawHiresBackgroundHardwarePriority1Inline_16Color_8x8
-    (uint32 BGMode, uint32 bg, bool sub, int depth)
-{
-    S9xDrawHiresBackgroundHardwarePriority1Inline(
-        8,              // tileSize
-        5,              // tileShift
-		4,				// bitShift
-        4,              // paletteShift
-        7,              // paletteMask
-        0,              // startPalette
-        FALSE,          // directColourMode
-        BGMode, bg, sub, depth);
-}
-
-void S9xDrawHiresBackgroundHardwarePriority1Inline_16Color_16x16
-    (uint32 BGMode, uint32 bg, bool sub, int depth)
-{
-    S9xDrawHiresBackgroundHardwarePriority1Inline(
-        16,             // tileSize
-        5,              // tileShift
-		4,				// bitShift
-        4,              // paletteShift
-        7,              // paletteMask
-        0,              // startPalette
-        FALSE,          // directColourMode
-        BGMode, bg, sub, depth);
-}
-
-void S9xDrawHiresBackgroundHardwarePriority1Inline_16Color
-    (uint32 BGMode, uint32 bg, bool sub, int depth)
-{
-
-    if (BGSizes [PPU.BG[bg].BGSize] == 8)
-    {
-        S9xDrawHiresBackgroundHardwarePriority1Inline_16Color_8x8(
-            BGMode, bg, sub, depth);
-    }
-    else
-    {
-        S9xDrawHiresBackgroundHardwarePriority1Inline_16Color_16x16(
-            BGMode, bg, sub, depth);
-    }
-}
-
-
-
-
-//-------------------------------------------------------------------
-// Draw a clipped OBJ tile using 3D hardware.
-//-------------------------------------------------------------------
-inline void __attribute__((always_inline)) S9xDrawOBJClippedTileHardware (
-	uint32 snesTile, 
-	uint32 screenX, uint32 screenY, 
-	uint32 startX, uint32 width,
-	uint32 textureYOffset, uint32 height)
-{
-
-	// Prepare tile for rendering
-	//
-    uint8 *pCache;
-    uint16 *pCache16;
-
-    uint32 TileAddr = BG.TileAddress + ((snesTile & 0x1ff) << 5);
-
-	// OBJ tiles can be name-selected.
-	if ((snesTile & 0x1ff) >= 256)
-		TileAddr += BG.NameSelect;
-	TileAddr &= 0xffff;
-
-    uint32 TileNumber;
-    pCache = &BG.Buffer[(TileNumber = (TileAddr >> 5)) << 6];
-
-    if (!BG.Buffered [TileNumber])
-    {
-	    BG.Buffered[TileNumber] = S9xConvertTileTo8Bit (pCache, TileAddr);
-        if (BG.Buffered [TileNumber] == BLANK_TILE)
-            return;
-
-        GFX.VRAMPaletteFrame[TileAddr][8] = 0;
-        GFX.VRAMPaletteFrame[TileAddr][9] = 0;
-        GFX.VRAMPaletteFrame[TileAddr][10] = 0;
-        GFX.VRAMPaletteFrame[TileAddr][11] = 0;
-        GFX.VRAMPaletteFrame[TileAddr][12] = 0;
-        GFX.VRAMPaletteFrame[TileAddr][13] = 0;
-        GFX.VRAMPaletteFrame[TileAddr][14] = 0;
-        GFX.VRAMPaletteFrame[TileAddr][15] = 0;
-    }
-
-    if (BG.Buffered [TileNumber] == BLANK_TILE)
-	    return;
-
-	int texturePos = 0;
-
-    uint32 l;
-    uint8 pal;
-	{
-        pal = (snesTile >> 10) & 7;
-        GFX.ScreenColors = &IPPU.ScreenColors [(pal << 4) + 128];
-		texturePos = cacheGetTexturePositionFast(TileAddr, pal);
-		//printf ("  OBJ  addr:%x pal:%d %d\n", TileAddr, pal, texturePos);
-        if (GFX.VRAMPaletteFrame[TileAddr][pal + 8] != GFX.PaletteFrame[pal + 8])
-        {
-			texturePos = cacheGetSwapTexturePositionForAltFrameFast(TileAddr, pal);
-            GFX.VRAMPaletteFrame[TileAddr][pal + 8] = GFX.PaletteFrame[pal + 8];
-
-			//printf ("cache %d\n", texturePos);
-			gpu3dsCacheToTexturePosition(pCache, GFX.ScreenColors, texturePos);
-        }
-    }
-
-	// Render tile
-	//
-	int x0 = screenX + startX;
-	int y0 = screenY + (pal <= 3 ? 0x4000 : BG.Depth);
-	int x1 = x0 + width;
-	int y1 = y0 + 1;
-
-	int tx0 = startX;
-	int ty0 = textureYOffset;
-	int tx1 = tx0 + width;
-	int ty1 = ty0 + 1;
-
-	//printf ("Draw: %d %d %d, %d %d %d %d - %d %d %d %d (%d)\n", screenOffset, startX, startLine, x0, y0, x1, y1, tx0, ty0, tx1, ty1, texturePos);
-	gpu3dsAddTileVertexes(
-		x0, y0, x1, y1,
-		tx0, ty0,
-		tx1, ty1, (snesTile & (V_FLIP | H_FLIP)) + texturePos);
-}
 
 
 inline void __attribute__((always_inline)) S9xDrawOBJTileHardware2 (
+	bool sub, int depth, 
 	uint32 snesTile,
-	int screenX, int screenY, uint32 textureYOffset)
+	int screenX, int screenY, uint32 textureYOffset, int height)
 {
 
 	// Prepare tile for rendering
@@ -3189,14 +2591,14 @@ inline void __attribute__((always_inline)) S9xDrawOBJTileHardware2 (
         if (BG.Buffered [TileNumber] == BLANK_TILE)
             return;
 
-        GFX.VRAMPaletteFrame[TileAddr][8] = 0;
-        GFX.VRAMPaletteFrame[TileAddr][9] = 0;
-        GFX.VRAMPaletteFrame[TileAddr][10] = 0;
-        GFX.VRAMPaletteFrame[TileAddr][11] = 0;
-        GFX.VRAMPaletteFrame[TileAddr][12] = 0;
-        GFX.VRAMPaletteFrame[TileAddr][13] = 0;
-        GFX.VRAMPaletteFrame[TileAddr][14] = 0;
-        GFX.VRAMPaletteFrame[TileAddr][15] = 0;
+        GFX.VRAMPaletteFrame[TileAddr / 8][8] = 0;
+        GFX.VRAMPaletteFrame[TileAddr / 8][9] = 0;
+        GFX.VRAMPaletteFrame[TileAddr / 8][10] = 0;
+        GFX.VRAMPaletteFrame[TileAddr / 8][11] = 0;
+        GFX.VRAMPaletteFrame[TileAddr / 8][12] = 0;
+        GFX.VRAMPaletteFrame[TileAddr / 8][13] = 0;
+        GFX.VRAMPaletteFrame[TileAddr / 8][14] = 0;
+        GFX.VRAMPaletteFrame[TileAddr / 8][15] = 0;
     }
 
     if (BG.Buffered [TileNumber] == BLANK_TILE)
@@ -3209,30 +2611,36 @@ inline void __attribute__((always_inline)) S9xDrawOBJTileHardware2 (
 
 	{
         pal = (snesTile >> 10) & 7;
-        GFX.ScreenColors = &IPPU.ScreenColors [(pal << 4) + 128];
-		texturePos = cacheGetTexturePositionFast(TileAddr, pal + 8);
+		texturePos = cache3dsGetTexturePositionFast(TileAddr, pal + 8);
 		//printf ("%d\n", texturePos);
-        if (GFX.VRAMPaletteFrame[TileAddr][pal + 8] != GFX.PaletteFrame[pal + 8])
+        if (GFX.VRAMPaletteFrame[TileAddr / 8][pal + 8] != GFX.PaletteFrame[pal + 8])
         {
 			texturePos = cacheGetSwapTexturePositionForAltFrameFast(TileAddr, pal + 8);
-            GFX.VRAMPaletteFrame[TileAddr][pal + 8] = GFX.PaletteFrame[pal + 8];
+            GFX.VRAMPaletteFrame[TileAddr / 8][pal + 8] = GFX.PaletteFrame[pal + 8];
 
 			//printf ("cache %d\n", texturePos);
-			gpu3dsCacheToTexturePosition(pCache, GFX.ScreenColors, texturePos);
+	        uint16 *screenColors = &IPPU.ScreenColors [(pal << 4) + 128];
+			cache3dsCacheSnesTileToTexturePosition(pCache, screenColors, texturePos);
         }
     }
 
 	// Render tile
 	//
+	// Remove the test for sub screen (fixed Mickey mouse transparency problem when Mickey's
+	// talking to the wizard)
+	//
+	if (pal < 4)					
+		depth = depth & 0xfff;		// remove the alpha.
 	int x0 = screenX;
-	int y0 = screenY + (pal <= 3 ? 0x4000 : BG.Depth);
+	int y0 = screenY + depth;
+		
 	int x1 = x0 + 8;
-	int y1 = y0 + 1;
+	int y1 = y0 + height;
 
 	int tx0 = 0;
 	int ty0 = textureYOffset;
 	int tx1 = tx0 + 8;
-	int ty1 = ty0 + 1;
+	int ty1 = ty0 + height;
 
 	//printf ("Draw: %d %d %d, %d %d %d %d - %d %d %d %d (%d)\n", screenOffset, startX, startY, x0, y0, x1, y1, txBase + tx0, tyBase + ty0, txBase + tx1, tyBase + ty1, texturePos);
 	gpu3dsAddTileVertexes(
@@ -3242,64 +2650,14 @@ inline void __attribute__((always_inline)) S9xDrawOBJTileHardware2 (
 }
 
 
-
-//-------------------------------------------------------------------
-// Draw the OBJ layers using 3D hardware.
-//-------------------------------------------------------------------
-void S9xDrawOBJSHardwarePriority (bool8 sub, int depth = 0, int priority = 0)
+typedef struct 
 {
-#ifdef MK_DEBUG_RTO
-	if(Settings.BGLayering) fprintf(stderr, "Entering DrawOBJS() for %d-%d\n", GFX.StartY, GFX.EndY);
-#endif
-	CHECK_SOUND();
+	int		Height;
+	int		Y;
+	int		StartLine;
+} SOBJList;
 
-	//if (Settings.HWOBJRenderingMode == 0)
-	S9xComputeAndEnableStencilFunction(4, sub);
-
-	int p = priority;
-
-	BG.BitShift = 4;
-	BG.TileShift = 5;
-	BG.TileAddress = PPU.OBJNameBase;
-	BG.StartPalette = 128;
-	BG.PaletteShift = 4;
-	BG.PaletteMask = 7;
-	BG.Buffer = IPPU.TileCache [TILE_4BIT];
-	BG.Buffered = IPPU.TileCached [TILE_4BIT];
-	BG.NameSelect = PPU.OBJNameSelect;
-	BG.DirectColourMode = FALSE;
-	BG.Depth = depth;
-
-	GFX.PixSize = 1;
-
-	//printf ("OBJ p%d count = %d\n", p, BG.DrawOBJTileLaterIndexCount[p]);
-	for (int i = 0; i < BG.DrawOBJTileLaterIndexCount[p]; i++)
-	{
-		int index = BG.DrawOBJTileLaterIndex[p][i];
-		//if (BG.DrawOBJTileLaterParameters[index][0] == 0)
-		{
-			S9xDrawOBJTileHardware2 (
-				BG.DrawOBJTileLaterParameters[index][1], BG.DrawOBJTileLaterParameters[index][2], BG.DrawOBJTileLaterParameters[index][3],
-				BG.DrawOBJTileLaterParameters[index][4]);
-		}
-		/*else if (BG.DrawOBJTileLaterParameters[index][0] == 1)
-		{
-			// clipped tile.
-			//printf ("clip OBJ: %d %d %d %d %d %d\n", BG.DrawOBJTileParameters[p][i][1], BG.DrawOBJTileParameters[p][i][2],
-			//	BG.DrawOBJTileParameters[p][i][3], BG.DrawOBJTileParameters[p][i][4],
-			//	BG.DrawOBJTileParameters[p][i][5], BG.DrawOBJTileParameters[p][i][6]);
-
-			S9xDrawOBJClippedTileHardware (
-				BG.DrawOBJTileLaterParameters[index][1], BG.DrawOBJTileLaterParameters[index][2], BG.DrawOBJTileLaterParameters[index][3],
-				BG.DrawOBJTileLaterParameters[index][4], BG.DrawOBJTileLaterParameters[index][5], BG.DrawOBJTileLaterParameters[index][6], 
-				BG.DrawOBJTileLaterParameters[index][7]);
-		}*/
-	}
-
-	gpu3dsBindTextureSnesTileCache(GPU_TEXUNIT0);
-	gpu3dsEnableAlphaTestNotEqualsZero();
-	gpu3dsDrawVertexes();
-}
+SOBJList OBJList[128];
 
 
 //-------------------------------------------------------------------
@@ -3307,6 +2665,23 @@ void S9xDrawOBJSHardwarePriority (bool8 sub, int depth = 0, int priority = 0)
 //-------------------------------------------------------------------
 void S9xDrawOBJSHardware (bool8 sub, int depth = 0, int priority = 0)
 {
+	S9xComputeAndEnableStencilFunction(4, sub);
+
+	
+	// Note: We draw subscreens first, then the main screen.
+	// So if the subscreen has already been drawn, and we are drawing the main screen,
+	// we simply just redraw the same vertices that we have saved.
+	//
+	if (layerDrawn[5])
+	{
+		gpu3dsBindTextureSnesTileCache(GPU_TEXUNIT0);
+		gpu3dsSetTextureEnvironmentReplaceTexture0WithColorAlpha();
+		gpu3dsEnableAlphaTestNotEqualsZero();
+		gpu3dsDisableDepthTest();
+		gpu3dsDrawVertexes(true, 5);
+		return;		
+	}
+	
 #ifdef MK_DEBUG_RTO
 	if(Settings.BGLayering) fprintf(stderr, "Entering DrawOBJS() for %d-%d\n", GFX.StartY, GFX.EndY);
 #endif
@@ -3337,6 +2712,110 @@ if(Settings.BGLayering) {
 }
 #endif
 
+	if (PPU.PriorityDrawFromSprite >= 0 && 
+		GFX.EndY - GFX.StartY >= 16)	// Wonder what is the best value for this to get the optimal performance? 
+	{
+		//printf ("Fast OBJ draw %d\n", PPU.PriorityDrawFromSprite);
+		// Clear all heights
+		for (int i = 0; i < 128;)
+		{
+			OBJList[i++].Height = 0;
+			OBJList[i++].Height = 0;
+			OBJList[i++].Height = 0;
+			OBJList[i++].Height = 0;
+			OBJList[i++].Height = 0;
+			OBJList[i++].Height = 0;
+			OBJList[i++].Height = 0;
+			OBJList[i++].Height = 0;
+		}
+		for(uint32 Y=GFX.StartY; Y<=GFX.EndY; Y++)
+		{
+			for (int I = GFX.OBJLines[Y].OBJCount - 1; I >= 0; I --)
+			{
+				int S = GFX.OBJLines[Y].OBJ[I].Sprite;
+				if (S < 0) continue;
+
+				if (OBJList[S].Height == 0)
+				{
+					OBJList[S].Y = Y;
+					OBJList[S].StartLine = GFX.OBJLines[Y].OBJ[I].Line;
+				}
+				OBJList[S].Height ++;
+			}
+		}
+
+		int FirstSprite = PPU.PriorityDrawFromSprite;
+		int StartDrawingSprite = (FirstSprite - 1) & 0x7F;
+		int S = StartDrawingSprite;
+		do {
+			if (OBJList[S].Height)
+			{
+				int Height = OBJList[S].Height;
+				int Y = OBJList[S].Y;
+				int StartLine = OBJList[S].StartLine;
+
+				while (Height > 0)
+				{
+					int BaseTile = (((StartLine<<1) + (PPU.OBJ[S].Name&0xf0))&0xf0) | (PPU.OBJ[S].Name&0x100) | (PPU.OBJ[S].Palette << 10);
+					int TileX = PPU.OBJ[S].Name&0x0f;
+					int TileLine = (StartLine&7);
+					int TileInc = 1;
+					int TileHeight = 0;
+					if (PPU.OBJ[S].VFlip)
+					{
+						TileHeight = TileLine + 1;
+						TileLine = 7 - TileLine;
+						BaseTile |= V_FLIP;
+					}
+					else
+					{
+						TileHeight = 8 - TileLine;
+					}
+					if (TileHeight > Height)
+						TileHeight = Height;
+
+					if (PPU.OBJ[S].HFlip)
+					{
+						TileX = (TileX + (GFX.OBJWidths[S] >> 3) - 1) & 0x0f;
+						BaseTile |= H_FLIP;
+						TileInc = -1;
+					}
+
+					int X=PPU.OBJ[S].HPos; if(X==-256) X=256;
+
+					//if (!clipcount)
+					{
+						// No clipping at all.
+						//
+						for (; X<=256 && X<PPU.OBJ[S].HPos+GFX.OBJWidths[S]; TileX=(TileX+TileInc)&0x0f, X+=8)
+						{
+							//if (X < 255) printf ("Draw S=%d @ %d,%d (Line=%d, H=%d, P=%d)\n", S, X, Y, TileLine, TileHeight, PPU.OBJ[S].Priority);
+							
+							//DrawOBJTileLater (PPU.OBJ[S].Priority, BaseTile|TileX, X, Y, TileLine);
+							S9xDrawOBJTileHardware2 (sub, (PPU.OBJ[S].Priority + 1) * 3 * 256 + depth, 
+								BaseTile|TileX, X, Y, TileLine, TileHeight);
+
+						} // end for
+					}
+					Height -= TileHeight;
+					Y += TileHeight;
+
+					if (PPU.OBJ[S].VFlip)
+					{
+						StartLine -= TileHeight;
+						if (StartLine < 0)
+							StartLine += GFX.OBJWidths[S];
+					}
+					else
+						StartLine += TileHeight;
+				}
+			}
+
+			S = (S-1) & 0x7F;
+		} while (S != StartDrawingSprite);
+	}
+	else
+	{
 
 	for(uint32 Y=GFX.StartY, Offset=Y*GFX.PPL; Y<=GFX.EndY; Y++, Offset+=GFX.PPL)
 	{
@@ -3375,7 +2854,9 @@ if(Settings.BGLayering) {
 				//
 				for (int t=tiles, O=Offset+X*GFX.PixSize; X<=256 && X<PPU.OBJ[S].HPos+GFX.OBJWidths[S]; TileX=(TileX+TileInc)&0x0f, X+=8, O+=8*GFX.PixSize)
 				{
-					DrawOBJTileLater (PPU.OBJ[S].Priority, BaseTile|TileX, X, Y, TileLine);
+					//DrawOBJTileLater (PPU.OBJ[S].Priority, BaseTile|TileX, X, Y, TileLine);
+					S9xDrawOBJTileHardware2 (sub, (PPU.OBJ[S].Priority + 1) * 3 * 256 + depth, 
+						BaseTile|TileX, X, Y, TileLine, 1);
 
 				} // end for
 			}
@@ -3388,6 +2869,16 @@ if(Settings.BGLayering) {
 #ifdef MK_DEBUG_RTO
 	if(Settings.BGLayering) fprintf(stderr, "Exiting DrawOBJS() for %d-%d\n", GFX.StartY, GFX.EndY);
 #endif
+
+	}
+
+	//gpu3dsSetTextureEnvironmentReplaceTexture0();
+	gpu3dsBindTextureSnesTileCache(GPU_TEXUNIT0);
+	gpu3dsSetTextureEnvironmentReplaceTexture0WithColorAlpha();
+	gpu3dsEnableAlphaTestNotEqualsZero();
+	gpu3dsDisableDepthTest();
+	gpu3dsDrawVertexes(false, 5);
+	layerDrawn[5] = true;
 }
 
 
@@ -3401,7 +2892,7 @@ if(Settings.BGLayering) {
 void S9xPrepareMode7UpdateCharTile(int tileNumber)
 {
 	uint8 *charMap = &Memory.VRAM[1];	
-	gpu3dsCacheToMode7TexturePosition( 
+	cache3dsCacheSnesTileToMode7TexturePosition( 
 		&charMap[tileNumber * 128], GFX.ScreenColors, tileNumber, &IPPU.Mode7CharPaletteMask[tileNumber]); 
 }
 
@@ -3413,7 +2904,7 @@ void S9xPrepareMode7UpdateCharTile(int tileNumber)
 void S9xPrepareMode7ExtBGUpdateCharTile(int tileNumber)
 {
 	uint8 *charMap = &Memory.VRAM[1];	
-	gpu3dsCacheToMode7TexturePosition( \
+	cache3dsCacheSnesTileToMode7TexturePosition( \
 		&charMap[tileNumber * 128], GFX.ScreenColors128, tileNumber, &IPPU.Mode7CharPaletteMask[tileNumber]); \
 }
 
@@ -3485,7 +2976,7 @@ void S9xPrepareMode7CheckAndUpdateCharTiles()
 	// This fixes some of the mode 7 tile problems in Secret of Mana.
 	//
 	//if (!Memory.FillRAM [0x2133] & 0x40)
-	if (!(Memory.FillRAM [0x2133] & 0x40))
+	if (!IPPU.Mode7EXTBGFlag)
 	{
 		// Bug fix: Super Mario Kart Bowser Castle's tile 0 
 		//
@@ -3542,10 +3033,14 @@ void S9xPrepareMode7CheckAndUpdateCharTiles()
 		
 		// Prepare the 128 color palette by duplicate colors from 0-127 to 128-255
 		//
+		// Low priority (set the alpha to 0xe, and make use of the inprecise
+		// floating point math to achieve the same alpha translucency)
+		//
 		for (int i = 0; i < 128; i++)
-			GFX.ScreenColors128[i] = GFX.ScreenColors[i];
+			GFX.ScreenColors128[i] = GFX.ScreenRGB555toRGBA4[GFX.ScreenColors[i]] & 0xfffe;		
+		// High priority 	
 		for (int i = 0; i < 128; i++)
-			GFX.ScreenColors128[i + 128] = GFX.ScreenColors[i];
+			GFX.ScreenColors128[i + 128] = GFX.ScreenRGB555toRGBA4[GFX.ScreenColors[i]];		
 
 		// Ext BG with 128 colours
 		//
@@ -3590,7 +3085,8 @@ void S9xPrepareMode7CheckAndUpdateFullTexture()
 
 	// Use our mode 7 shader
 	//
-	gpu3dsUseShader(3);					
+	gpu3dsUseShader(3);	
+	gpu3dsSetMode7UpdateFrameCountUniform();				
 	
 	for (int section = 0; section < 4; section++)
 	{
@@ -3650,6 +3146,15 @@ void S9xPrepareMode7(bool sub)
 
 	t3dsStartTiming(71, "PrepM7-Palette");
 
+	if (!IPPU.Mode7EXTBGFlag)
+	{
+		gpu3dsSetMode7TexturesPixelFormatToRGB5551();
+	}
+	else
+	{
+		gpu3dsSetMode7TexturesPixelFormatToRGB4444();
+	}
+
 	// If any of the palette colours in a palette group have changed, 
 	// then we must refresh all tiles having those colours in that group.
 	//
@@ -3667,8 +3172,8 @@ void S9xPrepareMode7(bool sub)
 
 	t3dsStartTiming(72, "PrepM7-FullTile");
 	gpu3dsDisableDepthTest();
-	gpu3dsSetTextureEnvironmentReplaceTexture0();
 	gpu3dsBindTextureSnesMode7TileCache(GPU_TEXUNIT0);
+	gpu3dsSetTextureEnvironmentReplaceTexture0();
 	gpu3dsDisableAlphaTest();
 
 	S9xPrepareMode7CheckAndUpdateFullTexture();
@@ -3721,12 +3226,36 @@ void S9xPrepareMode7(bool sub)
 }
 
 
+extern int adjustableValue;
+
 //---------------------------------------------------------------------------
 // Draws the Mode 7 background.
 //---------------------------------------------------------------------------
-void S9xDrawBackgroundMode7Hardware(int bg, bool8 sub, int depth)
+void S9xDrawBackgroundMode7Hardware(int bg, bool8 sub, int depth, int alphaTest)
 {
 	t3dsStartTiming(27, "DrawBG0_M7");
+	//printf ("M7BG alphatest=%d\n", alphaTest);
+	//printf ("adjustableValue: %x\n", adjustableValue);
+
+	if (layerDrawn[bg])
+	{
+		gpu3dsSetTextureEnvironmentReplaceTexture0WithColorAlpha();
+
+		if (alphaTest == 0)
+			gpu3dsEnableAlphaTestNotEqualsZero();
+		else
+		{
+			if (GFX.r2131 & 0x40)
+				gpu3dsEnableAlphaTestGreaterThanEquals(0x7f);
+			else
+				gpu3dsEnableAlphaTestGreaterThanEquals(0xf0);
+		}
+
+		gpu3dsEnableDepthTest();
+
+		gpu3dsDrawMode7LineVertexes();
+		gpu3dsDrawVertexes(true, 4);
+	}
 
 	S9xComputeAndEnableStencilFunction(bg, sub);
 
@@ -3750,10 +3279,10 @@ void S9xDrawBackgroundMode7Hardware(int bg, bool8 sub, int depth)
 		
 		for (int clip = 0; clip < clipcount; clip++)*/
 		{
-			uint32 Left;
-			uint32 Right;
-			uint32 m7Left;
-			uint32 m7Right;
+			int Left;
+			int Right;
+			int m7Left;
+			int m7Right;
 
 			//if (!GFX.pCurrentClip->Count [0])
 			{
@@ -3769,7 +3298,11 @@ void S9xDrawBackgroundMode7Hardware(int bg, bool8 sub, int depth)
 					continue;
 			}*/
  
- 			#define CLIP_10_BIT_SIGNED(a)  (((a) << 19) >> 19)
+			// Bug fix: Used the original CLIP_10_BIT_SIGNED from Snes9x
+			// This fixes the intro for Super Chase HQ.
+			#define CLIP_10_BIT_SIGNED(a) \
+				((a) & ((1 << 10) - 1)) + (((((a) & (1 << 13)) ^ (1 << 13)) - (1 << 13)) >> 3)
+
  			int yy = Y;
 
 			// Bug fix: The mode 7 flipping problem.
@@ -3795,6 +3328,9 @@ void S9xDrawBackgroundMode7Hardware(int bg, bool8 sub, int depth)
 		    int AA1 = p->MatrixA * xx1; 
 		    int CC1 = p->MatrixC * xx1; 
 
+			//if (Y == GFX.StartY)
+			//	printf ("xx0=%d, xx1=%d, yy=%d, AA0=%d, CC0=%d, AA1=%d, CC1=%d, BB=%d, DD=%d\n", xx0, xx1, yy, AA0, CC0, AA1, CC1, BB, DD);
+
 		    /*int tx0 = ((AA0 + BB) / 256); 
 		    int ty0 = ((CC0 + DD) / 256); 
 		    int tx1 = ((AA1 + BB) / 256); 
@@ -3807,16 +3343,31 @@ void S9xDrawBackgroundMode7Hardware(int bg, bool8 sub, int depth)
 			//if (Y==GFX.StartY)
 			//	printf ("%d %d X=%d,%d Y=%d T=%d,%d %d,%d\n", sub, depth, Left, Right, Y, tx0, ty0, tx1, ty1);
 			//if (Y % 4 == 0)
-			//	printf ("Y=%d T=%d,%d %d,%d\n", Y, tx0 / 8, ty0 / 8, tx1 / 8, ty1 / 8);
+			//if (Y == GFX.StartY || Y == GFX.EndY)
+			//	printf ("Y=%d D=%d T=%4.1f,%4.1f %4.1f,%4.1f\n", Y, depth, tx0, ty0, tx1, ty1);
 
 			//gpu3dsAddMode7ScanlineVertexes(Left, Y+depth, Right, Y+1+depth, tx0, ty0, tx1, ty1, 0);
 			gpu3dsAddMode7LineVertexes(Left, Y+depth, Right, Y+1+depth, tx0, ty0, tx1, ty1);
 		}
 	}
 
-	gpu3dsEnableAlphaTestNotEqualsZero();
+	gpu3dsSetTextureEnvironmentReplaceTexture0WithColorAlpha();
+
+	if (alphaTest == 0)
+		gpu3dsEnableAlphaTestNotEqualsZero();
+	else
+	{
+		if (GFX.r2131 & 0x40)
+			gpu3dsEnableAlphaTestGreaterThanEquals(0x7f);
+		else
+			gpu3dsEnableAlphaTestGreaterThanEquals(0xf0);
+	}
+
+	gpu3dsEnableDepthTest();
+
 	gpu3dsDrawMode7LineVertexes();
-	gpu3dsDrawVertexes();
+	gpu3dsDrawVertexes(false, 4);
+	layerDrawn[bg] = true;
 	t3dsEndTiming(27);
 }
 
@@ -3869,7 +3420,11 @@ void S9xDrawBackgroundMode7HardwareRepeatTile0(int bg, bool8 sub, int depth)
 					continue;
 			}*/
  
- 			#define CLIP_10_BIT_SIGNED(a)  (((a) << 19) >> 19)
+			// Bug fix: Used the original CLIP_10_BIT_SIGNED from Snes9x
+			// This fixes the intro for Super Chase HQ.
+			#define CLIP_10_BIT_SIGNED(a) \
+				((a) & ((1 << 10) - 1)) + (((((a) & (1 << 13)) ^ (1 << 13)) - (1 << 13)) >> 3)
+			 
  			int yy = Y;
  			yy = yy + CLIP_10_BIT_SIGNED(VOffset - CentreY);
 
@@ -3884,6 +3439,9 @@ void S9xDrawBackgroundMode7HardwareRepeatTile0(int bg, bool8 sub, int depth)
 		    int AA1 = p->MatrixA * xx1; 
 		    int CC1 = p->MatrixC * xx1; 
 
+			//if (Y == GFX.StartY)
+			//	printf ("AA0=%d, CC0=%d, AA1=%d, CC1=%d, BB=%d, DD=%d\n", AA0, CC0, AA1, CC1, BB, DD);
+
 		    /*int tx0 = ((AA0 + BB) / 256); 
 		    int ty0 = ((CC0 + DD) / 256); 
 		    int tx1 = ((AA1 + BB) / 256); 
@@ -3895,8 +3453,8 @@ void S9xDrawBackgroundMode7HardwareRepeatTile0(int bg, bool8 sub, int depth)
 
 			//if (Y==GFX.StartY)
 			//	printf ("%d %d X=%d,%d Y=%d T=%d,%d %d,%d\n", sub, depth, Left, Right, Y, tx0, ty0, tx1, ty1);
-			//if (Y % 4 == 0)
-			//	printf ("Y=%d T=%d,%d %d,%d\n", Y, tx0 / 8, ty0 / 8, tx1 / 8, ty1 / 8);
+			//if (Y == GFX.StartY || Y == GFX.EndY)
+			//	printf ("Y=%d D=%d T=%4.2f,%4.2f %4.2f,%4.2f\n", Y, depth, tx0 / 8, ty0 / 8, tx1 / 8, ty1 / 8);
 
 			// This is used for repeating tile 0.
 			// So the texture is completely within the 0-1024 boundary,
@@ -3923,148 +3481,25 @@ void S9xDrawBackgroundMode7HardwareRepeatTile0(int bg, bool8 sub, int depth)
 		}
 	}
 
+	gpu3dsSetTextureEnvironmentReplaceTexture0WithColorAlpha();
 	gpu3dsEnableAlphaTestNotEqualsZero();
+	gpu3dsEnableDepthTest();
+
+	//gpu3dsEnableAlphaTestNotEqualsZero();
 	gpu3dsDrawMode7LineVertexes();
-	gpu3dsDrawVertexes();
+	gpu3dsDrawVertexes(false, 5);
 	t3dsEndTiming(27);
 }
 
 
 
-//-----------------------------------------------------------
-// Draw OBJs from OBJ layer to main/sub screen
-//-----------------------------------------------------------
-void S9xDrawOBJsFromOBJLayerToScreen(bool sub, int priority)
-{
-	
-	if (!sub)
-		gpu3dsSetRenderTargetToMainScreenTexture();
-	else
-		gpu3dsSetRenderTargetToSubScreenTexture();
-	
-	S9xComputeAndEnableStencilFunction(4, sub);
 
-	gpu3dsSetTextureEnvironmentReplaceTexture0WithFullAlpha();
-	gpu3dsBindTextureOBJLayer(GPU_TEXUNIT0);
-	gpu3dsDisableDepthTest();
-	gpu3dsEnableAlphaTestEquals(priority + 1);
-	gpu3dsDisableAlphaBlending();
-
-	int OBDepth = SUB_OR_ADD (4) ? 0 : 0x4000;
-	int p = priority;
-
-	
-	for (int i = 0; i < BG.DrawOBJTileLaterIndexCount[p]; i++)
-	{
-		int index = BG.DrawOBJTileLaterIndex[p][i];
-		int snesTile = BG.DrawOBJTileLaterParameters[index][1];
-
-        int pal = (snesTile >> 10) & 7;
-
-		// Render tile
-		//
-		int x = BG.DrawOBJTileLaterParameters[index][2];
-		int y = BG.DrawOBJTileLaterParameters[index][3];
-		int depth = (pal <= 3) ? 0x4000 : OBDepth;
-		//printf ("OBJLayerToScreen: p%d @ %d,%d\n", p, x, y);
-		gpu3dsAddTileVertexes (
-			x, y + depth, 
-			x + 8, y + 8 + depth, 
-			x, y, x + 8, y + 8, 0);
-	}
-	/*	gpu3dsAddTileVertexes (
-			0, 0, 256, 256,
-			0, 0, 256, 256, 0);*/
-
-	gpu3dsDrawVertexes();
-	
-	gpu3dsBindTextureSnesTileCache(GPU_TEXUNIT0);
-	gpu3dsSetTextureEnvironmentReplaceTexture0();
-	gpu3dsDisableAlphaTest();
-}
-
-
-//-----------------------------------------------------------
-// Draw OBJs to OBJ layer.
-//-----------------------------------------------------------
-void S9xDrawOBJStoOBJLayer()
-{
-	if (ON_MAIN (4) || ON_SUB(4))
-	{
-		BG.DrawOBJTileLaterParametersCount = 0;
-		BG.DrawOBJTileLaterIndexCount[0] = 0;
-		BG.DrawOBJTileLaterIndexCount[1] = 0;
-		BG.DrawOBJTileLaterIndexCount[2] = 0;
-		BG.DrawOBJTileLaterIndexCount[3] = 0;
-		
-		
-		gpu3dsSetRenderTargetToOBJLayer();
-
-		// clear to black first.
-		gpu3dsSetTextureEnvironmentReplaceColor();
-		gpu3dsDisableDepthTest();
-		gpu3dsDisableStencilTest();
-		gpu3dsDisableAlphaBlending();
-		gpu3dsDisableAlphaTest();
-		gpu3dsDrawRectangle(0, 0, 256, 240, 0, 0x00000000);
-
-		// render OBJs
-		//
-		gpu3dsBindTextureSnesTileCache(GPU_TEXUNIT0);
-		gpu3dsEnableAlphaTestNotEqualsZero();
-		//gpu3dsDisableAlphaTest();
-		gpu3dsDisableDepthTest();
-
-		S9xDrawOBJSHardware(0, 0, 0);
-
-		/*
-		for (int p = 0; p < 4; p++)
-		{
-			gpu3dsSetTextureEnvironmentReplaceTexture0WithConstantAlpha(p + 1);
-			S9xDrawOBJSHardwarePriority(0, 0, p);
-		}
-		*/
-
-		BG.BitShift = 4;
-		BG.TileShift = 5;
-		BG.TileAddress = PPU.OBJNameBase;
-		BG.StartPalette = 128;
-		BG.PaletteShift = 4;
-		BG.PaletteMask = 7;
-		BG.Buffer = IPPU.TileCache [TILE_4BIT];
-		BG.Buffered = IPPU.TileCached [TILE_4BIT];
-		BG.NameSelect = PPU.OBJNameSelect;
-		BG.DirectColourMode = FALSE;
-		BG.Depth = 0;
-
-		printf ("OBJ count: %d\n", BG.DrawOBJTileLaterParametersCount);
-		int currentPriority = -1;
-		for (int i = 0; i < BG.DrawOBJTileLaterParametersCount; i++)
-		{
-			int priority = BG.DrawOBJTileLaterParameters[i][0]; 
-			if (currentPriority != priority)
-			{
-				printf ("P%d\n", priority);
-				gpu3dsSetTextureEnvironmentReplaceTexture0WithConstantAlpha(priority + 1);
-				currentPriority = priority;
-			}
-
-			//printf ("  %d,%d\n", BG.DrawOBJTileLaterParameters[i][2], BG.DrawOBJTileLaterParameters[i][3]);
-			S9xDrawOBJTileHardware2 (
-				BG.DrawOBJTileLaterParameters[i][1], BG.DrawOBJTileLaterParameters[i][2], BG.DrawOBJTileLaterParameters[i][3],
-				BG.DrawOBJTileLaterParameters[i][4]);
-			
-		}
-		gpu3dsEnableAlphaTestNotEqualsZero();
-		gpu3dsDrawVertexes();
-
-	}
-}
 
 
 //---------------------------------------------------------------------------
 // Renders the screen from GFX.StartY to GFX.EndY
 //---------------------------------------------------------------------------
+
 void S9xRenderScreenHardware (bool8 sub, bool8 force_no_add, uint8 D)
 {
 	t3dsStartTiming(31, "RenderScnHW");
@@ -4074,7 +3509,12 @@ void S9xRenderScreenHardware (bool8 sub, bool8 force_no_add, uint8 D)
     bool8 BG3;
     bool8 OB;
 
-	int BGDepth0 = 0, BGDepth1 = 0, BGDepth2 = 0, BGDepth3 = 0, OBDepth = 0, BackDepth = 0;
+	int BGAlpha0 = ALPHA_ZERO; 
+	int BGAlpha1 = ALPHA_ZERO;
+	int BGAlpha2 = ALPHA_ZERO;
+	int BGAlpha3 = ALPHA_ZERO;
+	int OBAlpha = ALPHA_ZERO;
+	int BackAlpha = ALPHA_ZERO;
 
     if (!sub)
     {
@@ -4088,402 +3528,307 @@ void S9xRenderScreenHardware (bool8 sub, bool8 force_no_add, uint8 D)
 
 		//printf ("Main Y:%d BGEnable:%d%d%d%d%d\n", GFX.StartY, BG0, BG1, BG2, BG3, OB);
 
-		BGDepth0 = SUB_OR_ADD (0) ? 0 : 0x4000;
-		BGDepth1 = SUB_OR_ADD (1) ? 0 : 0x4000;
-		BGDepth2 = SUB_OR_ADD (2) ? 0 : 0x4000;
-		BGDepth3 = SUB_OR_ADD (3) ? 0 : 0x4000;
-		OBDepth = SUB_OR_ADD (4) ? 0 : 0x4000;
-		BackDepth = SUB_OR_ADD (5) ? 0 : 0x4000;
-
-		//printf ("Math Y:%d BGEnable:%d%d%d%d%d%d %d\n", GFX.StartY, 
-		//	SUB_OR_ADD (0) ? 0 : 0, SUB_OR_ADD (1) ? 0 : 0, SUB_OR_ADD (2) ? 0 : 0, SUB_OR_ADD (3) ? 0 : 0, 
-		//	SUB_OR_ADD (4) ? 0 : 0, SUB_OR_ADD (5) ? 0 : 0, BackDepth);
     }
     else
     {
 		// Sub Screen
 		GFX.pCurrentClip = &IPPU.Clip [1];
-		BG0 = ON_SUB (0);
-		BG1 = ON_SUB (1);
-		BG2 = ON_SUB (2);
-		BG3 = ON_SUB (3);
-		OB  = ON_SUB (4);
 
-		//printf ("Sub  Y:%d BGEnable:%d%d%d%d%d\n", GFX.StartY, BG0, BG1, BG2, BG3, OB);
-		
+		if (PPU.BGMode != 5 && PPU.BGMode != 6)
+		{
+			if (!GFX.Pseudo)
+			{
+				BG0 = ON_SUB (0);
+				BG1 = ON_SUB (1);
+				BG2 = ON_SUB (2);
+				BG3 = ON_SUB (3);
+				OB  = ON_SUB (4);
+			}
+			else
+			{
+				BG0 = ON_SUB_PSEUDO (0);
+				BG1 = ON_SUB_PSEUDO (1);
+				BG2 = ON_SUB_PSEUDO (2);
+				BG3 = ON_SUB_PSEUDO (3);
+				OB  = ON_SUB_PSEUDO (4);
+			}
+		}
+		else
+		{
+			BG0 = ON_SUB_HIRES (0);
+			BG1 = ON_SUB_HIRES (1);
+			BG2 = ON_SUB_HIRES (2);
+			BG3 = ON_SUB_HIRES (3);
+			OB  = ON_SUB_HIRES (4);
+		}
     }
+
+	// We are going to use the same alphas as we do
+	// for the main screen. This is because we are
+	// going to create the same set of vertex data for
+	// the given background in the sub screen as the
+	// set we use for the main screen. This improves
+	// performance of games that render the same BG to
+	// main and sub screens.
+	// 
+	// Anyway the sub screen's alpha do not factor into
+	// color math. So this is fine.
+	//
+	if (PPU.BGMode != 5 && PPU.BGMode != 6 && !GFX.Pseudo)
+	{
+		int alpha = ALPHA_1_0;	 	// for Add or Sub   
+		if (GFX.r2131 & 0x40)	
+			alpha = ALPHA_0_5;		// for Add / 2 or Sub / 2
+
+		BGAlpha0 = SUB_OR_ADD (0) ? alpha : ALPHA_ZERO;
+		BGAlpha1 = SUB_OR_ADD (1) ? alpha : ALPHA_ZERO;
+		BGAlpha2 = SUB_OR_ADD (2) ? alpha : ALPHA_ZERO;
+		BGAlpha3 = SUB_OR_ADD (3) ? alpha : ALPHA_ZERO;
+
+		OBAlpha = SUB_OR_ADD (4) ? alpha : ALPHA_ZERO;
+		BackAlpha = SUB_OR_ADD (5) ? alpha : ALPHA_ZERO;
+	}
+	else
+	{
+		BGAlpha0 = ALPHA_0_5;
+		BGAlpha1 = ALPHA_0_5;
+		BGAlpha2 = ALPHA_0_5;
+		BGAlpha3 = ALPHA_0_5;
+
+		OBAlpha = ALPHA_0_5;
+		BackAlpha = ALPHA_0_5;
+	}
 
     sub |= force_no_add;
 
 	int depth = 0;
 
-	/*
-	#define DRAW_OBJS(p)  \
-		if (OB) \
-		{ \
-			t3dsStartTiming(26, "DrawOBJS"); \
-			S9xDrawOBJSHardware (!sub, depth, p); \
-			t3dsEndTiming(26); \
-		}
-		*/
-
-	/*
-	#define DRAW_OBJS(p)  \
-		if (OB) \
-		{ \
-			t3dsStartTiming(26, "DrawOBJS"); \
-			if (Settings.HWOBJRenderingMode == 0) \
-			{ \
-				if (p == 0) \
-				{ \
-					S9xDrawOBJSHardware (sub, OBDepth, p); \
-					S9xDrawOBJSHardwarePriority (sub, OBDepth, p); \
-				} \
-				else \
-					S9xDrawOBJSHardwarePriority (sub, OBDepth, p); \
-			} \
-			else \
-			{ \
-				S9xDrawOBJsFromOBJLayerToScreen(sub, p); \
-			} \
-			t3dsEndTiming(26); \
-		} 
-	*/
 
 	#define DRAW_OBJS(p)  \
 		if (OB) \
 		{ \
 			t3dsStartTiming(26, "DrawOBJS"); \
-			if (p == 0) \
-			{ \
-				S9xDrawOBJSHardware (sub, OBDepth, p); \
-				S9xDrawOBJSHardwarePriority (sub, OBDepth, p); \
-			} \
-			else \
-				S9xDrawOBJSHardwarePriority (sub, OBDepth, p); \
+			S9xDrawOBJSHardware (sub, OBAlpha, p); \
 			t3dsEndTiming(26); \
 		} 
 
 
-	#define DRAW_4COLOR_BG_INLINE(bg, p) \
+	#define DRAW_4COLOR_BG_INLINE(bg, p, d0, d1) \
 		if (BG##bg) \
 		{ \
 			if (bg == 0) { t3dsStartTiming(21, "DrawBG0"); } \
 			if (bg == 1) { t3dsStartTiming(22, "DrawBG1"); } \
 			if (bg == 2) { t3dsStartTiming(23, "DrawBG2"); } \
 			if (bg == 3) { t3dsStartTiming(24, "DrawBG3"); } \
-			if (p == 0) \
-				S9xDrawBackgroundHardwarePriority0Inline_4Color (PPU.BGMode, bg, sub, BGDepth##bg); \
-			else \
-				S9xDrawBackgroundHardwarePriority1Inline_4Color (PPU.BGMode, bg, sub, BGDepth##bg); \
+			S9xDrawBackgroundHardwarePriority0Inline_4Color (PPU.BGMode, bg, sub, d0 * 256 + BGAlpha##bg, d1 * 256 + BGAlpha##bg); \
 			t3dsEndTiming(21 + bg); \
 		}
 
-	#define DRAW_16COLOR_BG_INLINE(bg, p) \
+	#define DRAW_16COLOR_BG_INLINE(bg, p, d0, d1) \
 		if (BG##bg) \
 		{ \
 			if (bg == 0) { t3dsStartTiming(21, "DrawBG0"); } \
 			if (bg == 1) { t3dsStartTiming(22, "DrawBG1"); } \
 			if (bg == 2) { t3dsStartTiming(23, "DrawBG2"); } \
 			if (bg == 3) { t3dsStartTiming(24, "DrawBG3"); } \
-			if (p == 0) \
-				S9xDrawBackgroundHardwarePriority0Inline_16Color (PPU.BGMode, bg, sub, BGDepth##bg); \
-			else \
-				S9xDrawBackgroundHardwarePriority1Inline_16Color (PPU.BGMode, bg, sub, BGDepth##bg); \
+			S9xDrawBackgroundHardwarePriority0Inline_16Color (PPU.BGMode, bg, sub, d0 * 256 + BGAlpha##bg, d1 * 256 + BGAlpha##bg); \
 			t3dsEndTiming(21 + bg); \
 		}
 
-	#define DRAW_256COLOR_BG_INLINE(bg, p) \
+	#define DRAW_256COLOR_BG_INLINE(bg, p, d0, d1) \
 		if (BG##bg) \
 		{ \
 			if (bg == 0) { t3dsStartTiming(21, "DrawBG0"); } \
 			if (bg == 1) { t3dsStartTiming(22, "DrawBG1"); } \
 			if (bg == 2) { t3dsStartTiming(23, "DrawBG2"); } \
 			if (bg == 3) { t3dsStartTiming(24, "DrawBG3"); } \
-			if (p == 0) \
-				S9xDrawBackgroundHardwarePriority0Inline_256Color (PPU.BGMode, bg, sub, BGDepth##bg); \
-			else \
-				S9xDrawBackgroundHardwarePriority1Inline_256Color (PPU.BGMode, bg, sub, BGDepth##bg); \
+			S9xDrawBackgroundHardwarePriority0Inline_256Color (PPU.BGMode, bg, sub, d0 * 256 + BGAlpha##bg, d1 * 256 + BGAlpha##bg); \
 			t3dsEndTiming(21 + bg); \
 		}
 
-	#define DRAW_4COLOR_OFFSET_BG_INLINE(bg, p) \
+	#define DRAW_4COLOR_OFFSET_BG_INLINE(bg, p, d0, d1) \
 		if (BG##bg) \
 		{ \
 			if (bg == 0) { t3dsStartTiming(21, "DrawBG0"); } \
 			if (bg == 1) { t3dsStartTiming(22, "DrawBG1"); } \
 			if (bg == 2) { t3dsStartTiming(23, "DrawBG2"); } \
 			if (bg == 3) { t3dsStartTiming(24, "DrawBG3"); } \
-			if (p == 0) \
-				S9xDrawOffsetBackgroundHardwarePriority0Inline_4Color (PPU.BGMode, bg, sub, BGDepth##bg); \
-			else \
-				S9xDrawBackgroundHardwarePriority1Inline_4Color (PPU.BGMode, bg, sub, BGDepth##bg); \
+			S9xDrawOffsetBackgroundHardwarePriority0Inline_4Color (PPU.BGMode, bg, sub, d0 * 256 + BGAlpha##bg, d1 * 256 + BGAlpha##bg); \
 			t3dsEndTiming(21 + bg); \
 		}
 
-	#define DRAW_16COLOR_OFFSET_BG_INLINE(bg, p) \
+	#define DRAW_16COLOR_OFFSET_BG_INLINE(bg, p, d0, d1) \
 		if (BG##bg) \
 		{ \
 			if (bg == 0) { t3dsStartTiming(21, "DrawBG0"); } \
 			if (bg == 1) { t3dsStartTiming(22, "DrawBG1"); } \
 			if (bg == 2) { t3dsStartTiming(23, "DrawBG2"); } \
 			if (bg == 3) { t3dsStartTiming(24, "DrawBG3"); } \
-			if (p == 0) \
-				S9xDrawOffsetBackgroundHardwarePriority0Inline_16Color (PPU.BGMode, bg, sub, BGDepth##bg); \
-			else \
-				S9xDrawBackgroundHardwarePriority1Inline_16Color (PPU.BGMode, bg, sub, BGDepth##bg); \
+			S9xDrawOffsetBackgroundHardwarePriority0Inline_16Color (PPU.BGMode, bg, sub, d0 * 256 + BGAlpha##bg, d1 * 256 + BGAlpha##bg); \
 			t3dsEndTiming(21 + bg); \
 		}
 
-	#define DRAW_256COLOR_OFFSET_BG_INLINE(bg, p) \
+	#define DRAW_256COLOR_OFFSET_BG_INLINE(bg, p, d0, d1) \
 		if (BG##bg) \
 		{ \
 			if (bg == 0) { t3dsStartTiming(21, "DrawBG0"); } \
 			if (bg == 1) { t3dsStartTiming(22, "DrawBG1"); } \
 			if (bg == 2) { t3dsStartTiming(23, "DrawBG2"); } \
 			if (bg == 3) { t3dsStartTiming(24, "DrawBG3"); } \
-			if (p == 0) \
-				S9xDrawOffsetBackgroundHardwarePriority0Inline_256Color (PPU.BGMode, bg, sub, BGDepth##bg); \
-			else \
-				S9xDrawBackgroundHardwarePriority1Inline_256Color (PPU.BGMode, bg, sub, BGDepth##bg); \
+			S9xDrawOffsetBackgroundHardwarePriority0Inline_256Color (PPU.BGMode, bg, sub, d0 * 256 + BGAlpha##bg, d1 * 256 + BGAlpha##bg); \
 			t3dsEndTiming(21 + bg); \
 		}
 
-	#define DRAW_4COLOR_HIRES_BG_INLINE(bg, p) \
+	#define DRAW_4COLOR_HIRES_BG_INLINE(bg, p, d0, d1) \
 		if (BG##bg) \
 		{ \
 			if (bg == 0) { t3dsStartTiming(21, "DrawBG0"); } \
 			if (bg == 1) { t3dsStartTiming(22, "DrawBG1"); } \
 			if (bg == 2) { t3dsStartTiming(23, "DrawBG2"); } \
 			if (bg == 3) { t3dsStartTiming(24, "DrawBG3"); } \
-			if (p == 0) \
-				S9xDrawHiresBackgroundHardwarePriority0Inline_4Color (PPU.BGMode, bg, sub, BGDepth##bg); \
-			else \
-				S9xDrawHiresBackgroundHardwarePriority1Inline_4Color (PPU.BGMode, bg, sub, BGDepth##bg); \
+			S9xDrawHiresBackgroundHardwarePriority0Inline_4Color (PPU.BGMode, bg, sub, d0 * 256 + BGAlpha##bg, d1 * 256 + BGAlpha##bg); \
 			t3dsEndTiming(21 + bg); \
 		}
 
 
-	#define DRAW_16COLOR_HIRES_BG_INLINE(bg, p) \
+	#define DRAW_16COLOR_HIRES_BG_INLINE(bg, p, d0, d1) \
 		if (BG##bg) \
 		{ \
 			if (bg == 0) { t3dsStartTiming(21, "DrawBG0"); } \
 			if (bg == 1) { t3dsStartTiming(22, "DrawBG1"); } \
 			if (bg == 2) { t3dsStartTiming(23, "DrawBG2"); } \
 			if (bg == 3) { t3dsStartTiming(24, "DrawBG3"); } \
-			if (p == 0) \
-				S9xDrawHiresBackgroundHardwarePriority0Inline_16Color (PPU.BGMode, bg, sub, BGDepth##bg); \
-			else \
-				S9xDrawHiresBackgroundHardwarePriority1Inline_16Color (PPU.BGMode, bg, sub, BGDepth##bg); \
+			S9xDrawHiresBackgroundHardwarePriority0Inline_16Color (PPU.BGMode, bg, sub, d0 * 256 + BGAlpha##bg, d1 * 256 + BGAlpha##bg); \
 			t3dsEndTiming(21 + bg); \
 		}
 
 
-	// Initialize the draw later parameters
-	// (Maybe creating the actual vertexes might be a better idea instead?)
-	//
-	//if (Settings.HWOBJRenderingMode == 0)
-	{
-		BG.DrawOBJTileLaterParametersCount = 0;
-		BG.DrawOBJTileLaterIndexCount[0] = 0;
-		BG.DrawOBJTileLaterIndexCount[1] = 0;
-		BG.DrawOBJTileLaterIndexCount[2] = 0;
-		BG.DrawOBJTileLaterIndexCount[3] = 0;
-	}
-
-	//printf ("BG Enable %d%d%d%d\n", BG0, BG1, BG2, BG3);
+	//printf ("Mode: %d (%d-%d), %s\n", PPU.BGMode, GFX.StartY, GFX.EndY, sub ? "S" : "M");
+	//printf ("BG Enable %d%d%d%d%d (%s)\n", BG0, BG1, BG2, BG3, OB, sub ? "S" : "M");
 	
-	
+	//if (GFX.StartY == 0)
+	//	printf("BG Mode: %d\n", PPU.BGMode);
+
 	switch (PPU.BGMode)
 	{
 		case 0:
-			gpu3dsSetTextureEnvironmentReplaceColor();
-			S9xDrawBackdropHardware(sub, BackDepth);
+			S9xDrawBackdropHardware(sub, BackAlpha);
 
-			gpu3dsSetTextureEnvironmentReplaceTexture0();
-			DRAW_4COLOR_BG_INLINE (3, 0);
-			DRAW_4COLOR_BG_INLINE (2, 0);
 			DRAW_OBJS(0);
+			DRAW_4COLOR_BG_INLINE(0, 0, 8, 11);
+			DRAW_4COLOR_BG_INLINE(1, 0, 7, 10);
+			DRAW_4COLOR_BG_INLINE(2, 0, 2, 5);
+			DRAW_4COLOR_BG_INLINE(3, 0, 1, 4);
 
-			DRAW_4COLOR_BG_INLINE (3, 1);
-			DRAW_4COLOR_BG_INLINE (2, 1);
-			DRAW_OBJS(1);
-
-			DRAW_4COLOR_BG_INLINE (1, 0);
-			DRAW_4COLOR_BG_INLINE (0, 0);
-			DRAW_OBJS(2);
-
-			DRAW_4COLOR_BG_INLINE (1, 1);
-			DRAW_4COLOR_BG_INLINE (0, 1);
-			DRAW_OBJS(3);
-			gpu3dsDrawVertexes();
 			break;
 		case 1:
-			gpu3dsSetTextureEnvironmentReplaceColor();
-			S9xDrawBackdropHardware(sub, BackDepth);
+			S9xDrawBackdropHardware(sub, BackAlpha);
 
-			gpu3dsSetTextureEnvironmentReplaceTexture0();
-			DRAW_4COLOR_BG_INLINE(2, 0);
 			DRAW_OBJS(0);
-			if (!PPU.BG3Priority)
-			{
-				DRAW_4COLOR_BG_INLINE(2, 1);
-			}
-			DRAW_OBJS(1);
-			DRAW_16COLOR_BG_INLINE(1, 0);
-			DRAW_16COLOR_BG_INLINE(0, 0);
-			DRAW_OBJS(2);
-			DRAW_16COLOR_BG_INLINE(1, 1);
-			DRAW_16COLOR_BG_INLINE(0, 1);
-			DRAW_OBJS(3);
-			if (PPU.BG3Priority)
-			{
-				DRAW_4COLOR_BG_INLINE(2, 1);
-			}
-			gpu3dsDrawVertexes();
+			DRAW_16COLOR_BG_INLINE(0, 0, 8, 11);
+			DRAW_16COLOR_BG_INLINE(1, 0, 7, 10);
+			if (PPU.BG3Priority) 
+				{ DRAW_4COLOR_BG_INLINE(2, 0, 2, 13); }
+			else 
+				{ DRAW_4COLOR_BG_INLINE(2, 0, 2, 5); }
 
 			break;
+
 		case 2:
-			gpu3dsSetTextureEnvironmentReplaceColor();
-			S9xDrawBackdropHardware(sub, BackDepth);
+			S9xDrawBackdropHardware(sub, BackAlpha);
 
-			gpu3dsSetTextureEnvironmentReplaceTexture0();
-			DRAW_16COLOR_OFFSET_BG_INLINE (1, 0);
 			DRAW_OBJS(0);
-
-			DRAW_16COLOR_OFFSET_BG_INLINE (0, 0);
-			DRAW_OBJS(1);
-
-			DRAW_16COLOR_OFFSET_BG_INLINE (1, 1);
-			DRAW_OBJS(2);
-
-			DRAW_16COLOR_OFFSET_BG_INLINE (0, 1);
-			DRAW_OBJS(3);
-
-			gpu3dsDrawVertexes();
+			DRAW_16COLOR_OFFSET_BG_INLINE(0, 0, 5, 11);
+			DRAW_16COLOR_OFFSET_BG_INLINE(1, 0, 2, 8);
 
 			break;
 		case 3:
-			gpu3dsSetTextureEnvironmentReplaceColor();
-			S9xDrawBackdropHardware(sub, BackDepth);
+			S9xDrawBackdropHardware(sub, BackAlpha);
 
-			gpu3dsSetTextureEnvironmentReplaceTexture0();
-			DRAW_16COLOR_BG_INLINE (1, 0);
 			DRAW_OBJS(0);
-
-			DRAW_256COLOR_BG_INLINE (0, 0);
-			DRAW_OBJS(1);
-
-			DRAW_16COLOR_BG_INLINE (1, 1);
-			DRAW_OBJS(2);
-
-			DRAW_256COLOR_BG_INLINE (0, 1);
-			DRAW_OBJS(3);
-
-			gpu3dsDrawVertexes();
+			DRAW_256COLOR_BG_INLINE(0, 0, 5, 11);
+			DRAW_16COLOR_BG_INLINE(1, 0, 2, 8);
 
 			break;
 		case 4:
-			gpu3dsSetTextureEnvironmentReplaceColor();
-			S9xDrawBackdropHardware(sub, BackDepth);
+			S9xDrawBackdropHardware(sub, BackAlpha);
 
-			gpu3dsSetTextureEnvironmentReplaceTexture0();
-			DRAW_4COLOR_OFFSET_BG_INLINE (1, 0);
 			DRAW_OBJS(0);
-
-			DRAW_256COLOR_OFFSET_BG_INLINE (0, 0);
-			DRAW_OBJS(1);
-
-			DRAW_4COLOR_OFFSET_BG_INLINE (1, 1);
-			DRAW_OBJS(2);
-
-			DRAW_256COLOR_OFFSET_BG_INLINE (0, 1);
-			DRAW_OBJS(3);
-
-			gpu3dsDrawVertexes();
+			DRAW_256COLOR_OFFSET_BG_INLINE(0, 0, 5, 11);
+			DRAW_4COLOR_OFFSET_BG_INLINE(1, 0, 2, 8);
 
 			break;
 		case 5:
-			gpu3dsSetTextureEnvironmentReplaceColor();
-			S9xDrawBackdropHardware(sub, BackDepth);
+			S9xDrawBackdropHardware(false, BackAlpha);
 
-			gpu3dsSetTextureEnvironmentReplaceTexture0();
-			DRAW_4COLOR_HIRES_BG_INLINE (1, 0);
 			DRAW_OBJS(0);
 
-			DRAW_16COLOR_HIRES_BG_INLINE (0, 0);
-			DRAW_OBJS(1);
-
-			DRAW_4COLOR_HIRES_BG_INLINE (1, 1);
-			DRAW_OBJS(2);
-
-			DRAW_16COLOR_HIRES_BG_INLINE (0, 1);
-			DRAW_OBJS(3);
-
-			gpu3dsDrawVertexes();
+			if (sub)
+				gpu3dsSetTextureOffset(0, 0);		// even pixels on sub-screen
+			else
+				gpu3dsSetTextureOffset(1, 0);
+			
+			DRAW_16COLOR_HIRES_BG_INLINE(0, 0, 5, 11);
+			DRAW_4COLOR_HIRES_BG_INLINE(1, 0, 2, 8);
 
 			break;
 		case 6:
-			gpu3dsSetTextureEnvironmentReplaceColor();
-			S9xDrawBackdropHardware(sub, BackDepth);
+			S9xDrawBackdropHardware(false, BackAlpha);
 
-			gpu3dsSetTextureEnvironmentReplaceTexture0();
 			DRAW_OBJS(0);
-			DRAW_16COLOR_BG_INLINE (0, 0);
-			DRAW_OBJS(1);
 
-			DRAW_OBJS(2);
-			DRAW_16COLOR_BG_INLINE (0, 1);
-			DRAW_OBJS(3);
-
-			gpu3dsDrawVertexes();
+			if (sub)
+				gpu3dsSetTextureOffset(0, 0);		// even pixels on sub-screen
+			else
+				gpu3dsSetTextureOffset(1, 0);
+			
+			DRAW_16COLOR_OFFSET_BG_INLINE(0, 0, 5, 11);
 
 			break;
 		case 7:
 			// TODO: Mode 7 graphics.
 			//
-			gpu3dsSetTextureEnvironmentReplaceColor();
-			S9xDrawBackdropHardware(sub, BackDepth);
+			S9xDrawBackdropHardware(sub, BackAlpha);
 
 			gpu3dsSetTextureEnvironmentReplaceTexture0();
 			S9xPrepareMode7(sub);
 
-			#define DRAW_M7BG(bg) \
+			#define DRAW_M7BG(bg, d, alphaTest) \
 				if (BG##bg) \
 				{ \
 					if (PPU.Mode7Repeat == 0) \
 					{ \
 						gpu3dsBindTextureSnesMode7FullRepeat(GPU_TEXUNIT0); \
-						S9xDrawBackgroundMode7Hardware(bg, sub, BGDepth##bg); \
+						S9xDrawBackgroundMode7Hardware(bg, sub, BGAlpha##bg + d*256, alphaTest); \
 					} \
 					else if (PPU.Mode7Repeat == 2) \
 					{ \
 						gpu3dsBindTextureSnesMode7Full(GPU_TEXUNIT0); \
-						S9xDrawBackgroundMode7Hardware(bg, sub, BGDepth##bg); \
+						S9xDrawBackgroundMode7Hardware(bg, sub, BGAlpha##bg + d*256, alphaTest); \
 					} \
 					else \ 
 					{ \
 						gpu3dsBindTextureSnesMode7Tile0CacheRepeat(GPU_TEXUNIT0); \
-						S9xDrawBackgroundMode7HardwareRepeatTile0(bg, sub, BGDepth##bg); \
+						S9xDrawBackgroundMode7HardwareRepeatTile0(bg, sub, BGAlpha##bg + d*256); \
 						gpu3dsBindTextureSnesMode7Full(GPU_TEXUNIT0); \
-						S9xDrawBackgroundMode7Hardware(bg, sub, BGDepth##bg); \
+						S9xDrawBackgroundMode7Hardware(bg, sub, BGAlpha##bg + d*256, alphaTest); \
 					} \
 				}
 
-			if ((Memory.FillRAM [0x2133] & 0x40) && !BG0)  
-				DRAW_M7BG(1);
-			
-			gpu3dsBindTextureSnesTileCache(GPU_TEXUNIT0);
+				
 			DRAW_OBJS(0);
-			gpu3dsDrawVertexes();
-
-			DRAW_M7BG(0);
-
-			gpu3dsBindTextureSnesTileCache(GPU_TEXUNIT0);
-			DRAW_OBJS(1);
-			DRAW_OBJS(2);
-			DRAW_OBJS(3);		
-			gpu3dsDrawVertexes();		
+			//printf ("M7Repeat:%d EXTBG:%d\n", PPU.Mode7Repeat, IPPU.Mode7EXTBGFlag);
+			//printf ("$2131 = %x, $2133 = %x (%s)\n", GFX.r2131, Memory.FillRAM [0x2133], sub ? "S" : "M");
+			if (IPPU.Mode7EXTBGFlag)
+			{
+				DRAW_M7BG(1, 2, 0);
+				DRAW_M7BG(1, 8, 1);
+				DRAW_M7BG(0, 5, 0);
+			}
+			else
+			{
+				DRAW_M7BG(0, 5, 0);
+			}
 
 			// debugging only
 			//
@@ -4511,7 +3856,31 @@ inline void S9xRenderColorMath()
 {
 	gpu3dsEnableAlphaTestNotEqualsZero();
 	
-	if (GFX.r2130 & 2)
+	if (PPU.BGMode == 5 || PPU.BGMode == 6 || GFX.Pseudo)
+	{
+		// For hi-res modes, we will always do add / 2 blending
+		// NOTE: This is not the SNES doing any blending, but
+		// we are actually emulating the TV doing the blending 
+		// of both main/sub screens!
+
+		//gpu3dsEnableDepthTest();
+		gpu3dsDisableDepthTest();
+
+		// Subscreen math
+		//
+		gpu3dsBindTextureSubScreen(GPU_TEXUNIT0);
+		gpu3dsSetTextureEnvironmentReplaceTexture0();
+		gpu3dsSetRenderTargetToMainScreenTexture();
+
+		gpu3dsEnableAdditiveDiv2Blending();	// div 2
+
+		gpu3dsAddTileVertexes(0, GFX.StartY, 256, GFX.EndY + 1,
+			0, GFX.StartY, 256, GFX.EndY + 1, 0);
+		gpu3dsDrawVertexes();
+		gpu3dsDisableDepthTest();
+
+	}
+	else if (GFX.r2130 & 2)
 	{
 		// Bug fix: We have to render the subscreen as long either of the
 		//          212D and 2131 registers are set for any BGs.
@@ -4521,15 +3890,15 @@ inline void S9xRenderColorMath()
 		//
 		if (ANYTHING_ON_SUB || ADD_OR_SUB_ON_ANYTHING)
 		{
-			gpu3dsEnableDepthTest();
+			//gpu3dsEnableDepthTest();
+			gpu3dsDisableDepthTest();
 
 			// Subscreen math
 			//
-			gpu3dsSetTextureEnvironmentReplaceTexture0();
 			gpu3dsBindTextureSubScreen(GPU_TEXUNIT0);
+			gpu3dsSetTextureEnvironmentReplaceTexture0();
 			gpu3dsSetRenderTargetToMainScreenTexture();
 			
-
 			if (GFX.r2131 & 0x80)
 			{
 				// Subtractive
@@ -4542,6 +3911,22 @@ inline void S9xRenderColorMath()
 				if (GFX.r2131 & 0x40) gpu3dsEnableAdditiveDiv2Blending();	// div 2
 				else gpu3dsEnableAdditiveBlending();					// no div
 			}
+
+			// Debugging only
+			/*
+			if (GFX.r2131 & 0x80)
+			{
+				// Subtractive
+				if (GFX.r2131 & 0x40) printf("  subcreen SUB/2\n");
+				else printf("  subcreen SUB\n");
+			}
+			else
+			{
+				// Additive
+				if (GFX.r2131 & 0x40) printf("  subcreen ADD/2\n");	// div 2
+				else printf("  subcreen ADD\n");					// no div
+			}
+			*/
 
 			gpu3dsAddTileVertexes(0, GFX.StartY, 256, GFX.EndY + 1,
 				0, GFX.StartY, 256, GFX.EndY + 1, 0);
@@ -4556,7 +3941,8 @@ inline void S9xRenderColorMath()
 
 		// Colour Math
 		//
-		gpu3dsEnableDepthTest();
+		//gpu3dsEnableDepthTest();
+		gpu3dsDisableDepthTest();
 
 		gpu3dsSetTextureEnvironmentReplaceColor();
 		gpu3dsSetRenderTargetToMainScreenTexture();
@@ -4574,6 +3960,22 @@ inline void S9xRenderColorMath()
 			else gpu3dsEnableAdditiveBlending();					// no div
 		}
 		
+		// Debugging only
+		/*
+		if (GFX.r2131 & 0x80)
+		{
+			// Subtractive
+			if (GFX.r2131 & 0x40) printf("  fixedcol SUB/2\n");
+			else printf("  fixedcol SUB\n");
+		}
+		else
+		{
+			// Additive
+			if (GFX.r2131 & 0x40) printf("  fixedcol ADD/2\n");	// div 2
+			else printf("  fixedcol ADD\n");					// no div
+		}
+		*/
+
 		for (int i = 0; i < IPPU.FixedColorSections.Count; i++)
 		{
 			uint32 fixedColour = IPPU.FixedColorSections.Section[i].Value;
@@ -4581,9 +3983,9 @@ inline void S9xRenderColorMath()
 			if (fixedColour != 0xff)
 			{
 				// debugging only
-				/*if (GFX.r2131 & 0x80) printf ("  -"); else printf("  +");
-				if (GFX.r2131 & 0x40) printf ("/2"); else printf("/1");
-				printf (" cmath Y:%d-%d, 2131:%02x, %04x\n", IPPU.FixedColorSections.Section[i].StartY, IPPU.FixedColorSections.Section[i].EndY, GFX.r2131, fixedColour);*/
+				//if (GFX.r2131 & 0x80) printf ("  -"); else printf("  +");
+				//if (GFX.r2131 & 0x40) printf ("/2"); else printf("/1");
+				//printf (" cmath Y:%d-%d, 2131:%02x, %04x\n", IPPU.FixedColorSections.Section[i].StartY, IPPU.FixedColorSections.Section[i].EndY, GFX.r2131, fixedColour);
 
 				gpu3dsAddRectangleVertexes(
 					0, IPPU.FixedColorSections.Section[i].StartY, 
@@ -4608,19 +4010,20 @@ inline void S9xRenderClipToBlackAndColorMath()
 		{
 			//printf ("clear to black: Y %d-%d 2130:%02x\n", GFX.StartY, GFX.EndY, GFX.r2130);
 			
-			// we only want to clip colors to black, so don't modify the depth
-			gpu3dsDisableDepthTestAndWriteColorAlphaOnly();
+			gpu3dsDisableAlphaBlendingKeepDestAlpha();
+			gpu3dsDisableDepthTest();
+			
 			gpu3dsSetTextureEnvironmentReplaceColor();
 			gpu3dsSetRenderTargetToMainScreenTexture();
 			gpu3dsDisableAlphaTest();
-			
+
 			gpu3dsAddRectangleVertexes(
 				0, GFX.StartY, 256, GFX.EndY + 1, 0, 0xff);
 			gpu3dsDrawVertexes();
 		}
 	}
 
-	if ((GFX.r2130 & 0x30) != 0x30)
+	if ((GFX.r2130 & 0x30) != 0x30 || PPU.BGMode == 5 || PPU.BGMode == 6 || GFX.Pseudo)
 	{
 		// Do actual color math
 		//
@@ -4758,6 +4161,7 @@ void S9xUpdateScreenHardware ()
     GFX.r212d = Memory.FillRAM [0x212d];
     GFX.r2130 = Memory.FillRAM [0x2130];
 
+/*
 #ifdef JP_FIX
 
     GFX.Pseudo = (Memory.FillRAM [0x2133] & 8) != 0 &&
@@ -4770,7 +4174,11 @@ void S9xUpdateScreenHardware ()
 		(GFX.r212c & 15) != (GFX.r212d & 15) &&
 		(GFX.r2131 & 0x3f) == 0;
 
-#endif
+#endif*/
+
+	// Fixed pseudo hi-res (Kirby Dreamland 3)
+    GFX.Pseudo = (Memory.FillRAM [0x2133] & 8) != 0 &&
+				 (GFX.r212c & 15) != (GFX.r212d & 15);
 
     if (IPPU.OBJChanged)
 		S9xSetupOBJ ();
@@ -4804,15 +4212,17 @@ void S9xUpdateScreenHardware ()
     uint32 starty = GFX.StartY;
     uint32 endy = GFX.EndY;
 
-
+	gpu3dsSetTextureOffset(0, 0); 
 	gpu3dsDisableDepthTest();
-	gpu3dsEnableAlphaBlending();
+	gpu3dsDisableAlphaBlending();
 
-	/*if (Settings.HWOBJRenderingMode == 1)
-	{
-		S9xDrawOBJStoOBJLayer();
-
-	}*/
+	layerDrawn[0] = false;
+	layerDrawn[1] = false;
+	layerDrawn[2] = false;
+	layerDrawn[3] = false;
+	layerDrawn[4] = false;
+	layerDrawn[5] = false;
+	layerDrawn[6] = false;
 
 	// Bug fix: We have to render as long as 
 	// the 2130 register says that we have are
@@ -4822,10 +4232,12 @@ void S9xUpdateScreenHardware ()
 	// This is because the backdrop color will be
 	// used for the color math.
 	//
-	if (ANYTHING_ON_SUB || (GFX.r2130 & 2))
+	//printf ("Render Y:%d-%d M%d\n", GFX.StartY, GFX.EndY, PPU.BGMode);
+
+	if (ANYTHING_ON_SUB || (GFX.r2130 & 2) || PPU.BGMode == 5 || PPU.BGMode == 6 || GFX.Pseudo)
 	{
 		// debugging only
-		//printf ("SS Y:%d-%d M%d\n", GFX.StartY, GFX.EndY, PPU.BGMode);
+		//printf ("SS Y:%d-%d M%d TS:%x\n", GFX.StartY, GFX.EndY, PPU.BGMode, GFX.r212d & 0x1f);
 
 		// Render the subscreen
 		//
@@ -4835,7 +4247,7 @@ void S9xUpdateScreenHardware ()
 	}
 
 	// debugging only
-	//printf ("MS Y:%d-%d M%d\n", GFX.StartY, GFX.EndY, PPU.BGMode);
+	//printf ("MS Y:%d-%d M%d TM:%x\n", GFX.StartY, GFX.EndY, PPU.BGMode, GFX.r212c & 0x1f);
 
 	// Render the main screen.
 	//
@@ -4845,6 +4257,7 @@ void S9xUpdateScreenHardware ()
 
 	// Do clip to black + color math here
 	//
+	gpu3dsEnableAlphaBlending();
 	S9xRenderClipToBlackAndColorMath();
 
 	// Render the brightness
@@ -4853,20 +4266,22 @@ void S9xUpdateScreenHardware ()
 
 	/*
 	// For debugging only	
+	// (displays the mode 7 full texture)
 	// 
 	gpu3dsDisableStencilTest();
 	gpu3dsDisableDepthTest();
 	gpu3dsDisableAlphaTest();
 	gpu3dsDisableAlphaBlending();
 	gpu3dsSetTextureEnvironmentReplaceTexture0();
-	gpu3dsBindTextureSnesMode7TileCache(GPU_TEXUNIT0);
+	gpu3dsBindTextureSnesMode7Full(GPU_TEXUNIT0);
 	gpu3dsSetRenderTargetToMainScreenTexture();
-	gpu3dsAddTileVertexes(50, 170, 100, 220, 0, 0, 256, 256, 0);
+	gpu3dsAddTileVertexes(0, 0, 220, 220, 437, 894, 587, 1025, 0);
 	gpu3dsDrawVertexes();
 	*/
 	
-	/*
+	/*	
 	// For debugging only	
+	// (displays the final main screen/sub screen at the bottom right corner)
 	// 
 	gpu3dsDisableStencilTest();
 	gpu3dsDisableDepthTest();
@@ -4874,11 +4289,26 @@ void S9xUpdateScreenHardware ()
 	gpu3dsDisableAlphaBlending();
 	gpu3dsSetTextureEnvironmentReplaceTexture0();
 	gpu3dsSetRenderTargetToMainScreenTexture();
-	gpu3dsBindTextureSubScreen(GPU_TEXUNIT0);
+	gpu3dsBindTextureMainScreen(GPU_TEXUNIT0);
 	gpu3dsAddTileVertexes(150, 170, 200, 220, 0, 0, 256, 256, 0);
 	gpu3dsDrawVertexes();
-	gpu3dsBindTextureDepthForScreens(GPU_TEXUNIT0);
+	gpu3dsBindTextureSubScreen(GPU_TEXUNIT0);
 	gpu3dsAddTileVertexes(200, 170, 250, 220, 0, 0, 256, 256, 0);
+	gpu3dsDrawVertexes();
+	*/
+
+	/*
+	// For debugging only	
+	// (displays the mode 7 full texture)
+	// 
+	gpu3dsDisableStencilTest();
+	gpu3dsDisableDepthTest();
+	gpu3dsDisableAlphaTest();
+	gpu3dsDisableAlphaBlending();
+	gpu3dsSetTextureEnvironmentReplaceTexture0();
+	gpu3dsSetRenderTargetToMainScreenTexture();
+	gpu3dsBindTextureSnesMode7Full(GPU_TEXUNIT0);
+	gpu3dsAddTileVertexes(0, 0, 200, 200, 0, 0, 1024, 1024, 0);
 	gpu3dsDrawVertexes();
 	*/
 

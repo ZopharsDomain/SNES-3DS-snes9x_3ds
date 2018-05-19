@@ -27,6 +27,12 @@ include $(DEVKITARM)/3ds_rules
 #     - icon.png
 #     - <libctru folder>/default_icon.png
 #---------------------------------------------------------------------------------
+APP_TITLE	:=	SNES9x for 3DS
+APP_DESCRIPTION	:=	SNES emulator for 3DS.
+APP_AUTHOR	:=	bubble2k16
+ASSETS		:=	assets
+ICON		:=	$(ASSETS)/icon.png
+
 TARGET		:=	$(notdir $(CURDIR))
 BUILD		:=	build
 SOURCES		:=	source
@@ -39,15 +45,15 @@ INCLUDES	:=	include
 #---------------------------------------------------------------------------------
 
 
-ARCH	:=	-march=armv6k -mtune=mpcore -mfloat-abi=hard -mtp=soft 
+ARCH	:=	-march=armv6k -mtune=mpcore -mfloat-abi=hard -mtp=soft
 
 CFLAGS	:=	-g -w -O3 -mword-relocations -finline-limit=20000 \
 			-fomit-frame-pointer -ffunction-sections \
-			$(ARCH) 
+			$(ARCH)
 
-CFLAGS	+=	$(INCLUDE) -DARM11 -D_3DS
+CFLAGS	+=	$(INCLUDE) -DARM11 -D_3DS -DLIBCTRU_1_0_0
 
-CXXFLAGS	:= $(CFLAGS) -fno-rtti -fno-exceptions -std=gnu++11  
+CXXFLAGS	:= $(CFLAGS) -fno-rtti -fno-exceptions -std=gnu++11
 
 ASFLAGS	:=	-g $(ARCH)
 LDFLAGS	=	-specs=3dsx.specs -g $(ARCH) -Wl,-Map,$(notdir $*.map)
@@ -78,10 +84,13 @@ export DEPSDIR	:=	$(CURDIR)/$(BUILD)
 
 #CFILES		:=	$(foreach dir,$(SOURCES),$(notdir $(wildcard $(dir)/*.c)))
 #CPPFILES	:=	$(foreach dir,$(SOURCES),$(notdir $(wildcard $(dir)/*.cpp)))
-CFILES		:=	
-CPPFILES	:=	3dsmain.cpp 3dsmenu.cpp 3dsopt.cpp 3dsgpu.cpp 3dssound.cpp 3dsui.cpp 3dsfont.cpp \
-			sf2d_private.cpp \
-			fxinst.cpp fxemu.cpp fxdbg.cpp \
+CFILES		:=  blargsnes_spc700/dsp.c
+CPPFILES	:=	3dsmain.cpp 3dsmenu.cpp 3dsopt.cpp \
+			3dsgpu.cpp 3dssound.cpp 3dsui.cpp 3dsexit.cpp \
+			3dsconfig.cpp 3dsfiles.cpp 3dsinput.cpp 3dsmatrix.cpp \
+			3dsimpl.cpp 3dsimpl_tilecache.cpp 3dsimpl_gpu.cpp \
+			gpulib.cpp \
+			bsx.cpp fxinst.cpp fxemu.cpp fxdbg.cpp \
 			c4.cpp c4emu.cpp \
 			soundux.cpp spc700.cpp apu.cpp \
 			cpuexec.cpp sa1cpu.cpp hwregisters.cpp \
@@ -95,10 +104,8 @@ CPPFILES	:=	3dsmain.cpp 3dsmenu.cpp 3dsopt.cpp 3dsgpu.cpp 3dssound.cpp 3dsui.cpp
 			gfx.cpp gfxhw.cpp memmap.cpp clip.cpp cliphw.cpp \
 			dsp1.cpp ppu.cpp ppuvsect.cpp dma.cpp snes9x.cpp data.cpp globals.cpp \
 			lodepng.cpp
-			
 
-
-SFILES		:=	$(foreach dir,$(SOURCES),$(notdir $(wildcard $(dir)/*.s)))
+SFILES		:=	blargsnes_spc700/dspMixer.s
 PICAFILES	:=	$(foreach dir,$(SOURCES),$(notdir $(wildcard $(dir)/*.v.pica)))
 SHLISTFILES	:=	$(foreach dir,$(SOURCES),$(notdir $(wildcard $(dir)/*.shlist)))
 BINFILES	:=	$(foreach dir,$(DATA),$(notdir $(wildcard $(dir)/*.*)))
@@ -153,14 +160,50 @@ ifneq ($(ROMFS),)
 	export _3DSXFLAGS += --romfs=$(CURDIR)/$(ROMFS)
 endif
 
+#---------------------------------------------------------------------------------
+# OS detection to automatically determine the correct makerom variant to use for
+# CIA creation
+#---------------------------------------------------------------------------------
+UNAME_S := $(shell uname -s)
+UNAME_M := $(shell uname -m)
+MAKEROM :=
+ifeq ($(UNAME_S), Darwin)
+	ifeq ($(UNAME_M), x86_64)
+		MAKEROM := ./makerom/darwin_x86_64/makerom
+	endif
+endif
+ifeq ($(UNAME_S), Linux)
+	ifeq ($(UNAME_M), x86_64)
+		MAKEROM := ./makerom/linux_x86_64/makerom
+	endif
+endif
+ifeq ($(findstring CYGWIN_NT, $(UNAME_S)),CYGWIN_NT)
+	MAKEROM := ./makerom/windows_x86_64/makerom.exe
+endif
+ifeq ($(findstring MINGW32_NT, $(UNAME_S)), MINGW32_NT)
+	MAKEROM := ./makerom/windows_x86_64/makerom.exe
+endif
+#---------------------------------------------------------------------------------
+
+
 .PHONY: $(BUILD) clean all
 
 #---------------------------------------------------------------------------------
-all: $(BUILD)
+all: $(BUILD) cia
 
 $(BUILD):
 	@[ -d $@ ] || mkdir -p $@
+	[ -d build/blargsnes_spc700 ] 		|| mkdir -p build/blargsnes_spc700
 	@$(MAKE) --no-print-directory -C $(BUILD) -f $(CURDIR)/Makefile
+
+#---------------------------------------------------------------------------------
+cia: $(BUILD)
+ifneq ($(MAKEROM),)
+	$(MAKEROM) -rsf $(OUTPUT).rsf -elf $(OUTPUT).elf -icon $(OUTPUT).icn -banner $(OUTPUT).bnr -f cia -o $(OUTPUT).cia
+else
+	$(error "CIA creation is not supported on this platform ($(UNAME_S)_$(UNAME_M))")
+endif
+
 
 #---------------------------------------------------------------------------------
 clean:

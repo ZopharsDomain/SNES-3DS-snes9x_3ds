@@ -102,6 +102,7 @@
 #include "srtc.h"
 #include "spc7110.h"
 #include "movie.h"
+#include "bsx.h"
 
 #include "3dsopt.h"
 
@@ -767,6 +768,14 @@ void S9xSetPPU (uint8 Byte, uint16 Address)
 			break;
 		  case 0x212c:
 			// Main screen designation (backgrounds 1 - 4 and objects)
+
+			// Defer the write. This is ok since the read of this register
+			// returns the Open Bus value.
+			// 
+			IPPU.DeferredRegisterWrite[Address - 0x2100] = Byte;
+			return;		
+
+			/*			
 			if (Byte != Memory.FillRAM [0x212c])
 			{
 				DEBUG_FLUSH_REDRAW(Address, Byte); FLUSH_REDRAW ();
@@ -774,9 +783,18 @@ void S9xSetPPU (uint8 Byte, uint16 Address)
 				Memory.FillRAM [Address] = Byte;
 				return;
 			}
-			break;
+			break;*/
+
 		  case 0x212d:
 			// Sub-screen designation (backgrounds 1 - 4 and objects)
+
+			// Defer the write. This is ok since the read of this register
+			// returns the Open Bus value.
+			// 
+			IPPU.DeferredRegisterWrite[Address - 0x2100] = Byte;
+			return;		
+
+			/*			
 			if (Byte != Memory.FillRAM [0x212d])
 			{
 				DEBUG_FLUSH_REDRAW(Address, Byte); FLUSH_REDRAW ();
@@ -788,25 +806,52 @@ void S9xSetPPU (uint8 Byte, uint16 Address)
 				Memory.FillRAM [Address] = Byte;
 				return;
 			}
-			break;
+			break;*/
+
 		  case 0x212e:
 			// Window mask designation for main screen ?
+
+			// Defer the write. This is ok since the read of this register
+			// returns the Open Bus value.
+			// 
+			IPPU.DeferredRegisterWrite[Address - 0x2100] = Byte;
+			return;		
+
+			/*			
 			if (Byte != Memory.FillRAM [0x212e])
 			{
 				DEBUG_FLUSH_REDRAW(Address, Byte); FLUSH_REDRAW ();
 				PPU.RecomputeClipWindows = TRUE;
 			}
-			break;
+			break;*/
+			
 		  case 0x212f:
 			// Window mask designation for sub-screen ?
+
+			// Defer the write. This is ok since the read of this register
+			// returns the Open Bus value.
+			// 
+			IPPU.DeferredRegisterWrite[Address - 0x2100] = Byte;
+			return;		
+
+			/*
 			if (Byte != Memory.FillRAM [0x212f])
 			{
 				DEBUG_FLUSH_REDRAW(Address, Byte); FLUSH_REDRAW ();
 				PPU.RecomputeClipWindows = TRUE;
 			}
-			break;
+			break;*/
+
 		  case 0x2130:
 			// Fixed colour addition or screen addition
+
+			// Defer the write. This is ok since the read of this register
+			// returns the Open Bus value.
+			// 
+			IPPU.DeferredRegisterWrite[Address - 0x2100] = Byte;
+			return;		
+
+/*
 			if (Byte != Memory.FillRAM [0x2130])
 			{
 				DEBUG_FLUSH_REDRAW(Address, Byte); FLUSH_REDRAW ();
@@ -816,9 +861,18 @@ void S9xSetPPU (uint8 Byte, uint16 Address)
 					missing.direct = 1;
 #endif
 			}
-			break;
+			break;*/
+
 		  case 0x2131:
 			// Colour addition or subtraction select
+
+			// Defer the write. This is ok since the read of this register
+			// returns the Open Bus value.
+			// 
+			IPPU.DeferredRegisterWrite[Address - 0x2100] = Byte;
+			return;		
+
+			/*			
 			if (Byte != Memory.FillRAM[0x2131])
 			{
 				DEBUG_FLUSH_REDRAW(Address, Byte); FLUSH_REDRAW ();
@@ -843,7 +897,7 @@ void S9xSetPPU (uint8 Byte, uint16 Address)
 #endif
 				Memory.FillRAM[0x2131] = Byte;
 			}
-			break;
+			break; */
 		  case 0x2132:
 			if (Byte != Memory.FillRAM [0x2132])
 			{
@@ -896,7 +950,11 @@ void S9xSetPPU (uint8 Byte, uint16 Address)
 #endif
 				//if((Byte & 1)&&(PPU.BGMode==5||PPU.BGMode==6))
 				//IPPU.Interlace=1;
-				if((Memory.FillRAM [0x2133] ^ Byte)&3)
+
+				// Bug fix: Make sure we also flush redraw if there's a change
+				// to the pseudo hi-res flag
+				//
+				if((Memory.FillRAM [0x2133] ^ Byte)&(3 | 8))
 				{
 					DEBUG_FLUSH_REDRAW(Address, Byte); FLUSH_REDRAW ();
 					if((Memory.FillRAM [0x2133] ^ Byte)&2)
@@ -1005,6 +1063,8 @@ void S9xSetPPU (uint8 Byte, uint16 Address)
 
 			return;
 		}
+		else if (Settings.BS && Address >= 0x2188 && Address <= 0x219f)
+			S9xSetBSXPPU(Byte, Address);
 		else
 			// Dai Kaijyu Monogatari II
 			if (Address == 0x2801 && Settings.SRTC)
@@ -1521,6 +1581,9 @@ uint8 S9xGetPPU (uint16 Address)
 	if (Settings.SA1)
 	    return (S9xGetSA1 (Address));
 
+	if (Settings.BS && Address >= 0x2188 && Address <= 0x219f)
+		return (S9xGetBSXPPU(Address));
+
 	if (Address <= 0x2fff || Address >= 0x3000 + 768)
 	{
 	    switch (Address)
@@ -1686,8 +1749,16 @@ void S9xSetCPU (uint8 byte, uint16 Address)
 			if ((byte & 0x80) && 
 				!(Memory.FillRAM [0x4200] & 0x80) &&
 				CPU.V_Counter >= PPU.ScreenHeight + FIRST_VISIBLE_LINE &&
+				
+				// Bug in SNES9x v1.43
+				// NMI can trigger during VBlank as long as NMI_read ($4210) wasn't cleared.
+				// This fixes Cu-On-Pa SFC. But since this cannot be applied to all games
+				// we created a setting in SNESGameFixes to apply this fix only
+				// to Cu-On-Pa. (If we allow NMI to fire anytime in V-Blank, 
+				// Super Mario World 2's title screen becomes corrupted!)
+				//
 				CPU.V_Counter <= PPU.ScreenHeight + 
-				(SNESGameFixes.alienVSpredetorFix ? 25 : 15) &&   //jyam 15->25 alien vs predetor
+				(SNESGameFixes.cuonpaFix ? 35 : SNESGameFixes.alienVSpredetorFix ? 25 : 15) &&   //jyam 15->25 alien vs predetor
 // Panic Bomberman clears the NMI pending flag @ scanline 230 before enabling
 // NMIs again. The NMI routine crashes the CPU if it is called without the NMI
 // pending flag being set...
@@ -2640,10 +2711,11 @@ void S9xResetPPU ()
 	for (int i = 0; i < 16; i++)
 	{
 		GFX.PaletteFrame[i] = 1;
-		GFX.PaletteFrame4[i] = 1;
+		for (int bg = 0; bg < 4; bg++)
+			GFX.PaletteFrame4BG[bg][i] = 1;
 	}
 	GFX.PaletteFrame256[0] = 1;
-	ZeroMemory (GFX.VRAMPaletteFrame, 65536 * 16 * 4);
+	ZeroMemory (GFX.VRAMPaletteFrame, 8192 * 16 * 4);
 	IPPU.HiresFlip = 0;
 
 #ifdef CORRECT_VRAM_READS
@@ -2706,8 +2778,10 @@ void S9xResetPPU ()
 
 	Memory.FillRAM[0x4201]=Memory.FillRAM[0x4213]=0xFF;
 
+	for (int i = 0; i < 0x100; i++)
+		IPPU.DeferredRegisterWrite[i] = 0xff00;	
+		
 	S9xInitializeVerticalSections();
-
 }
 
 
@@ -2861,10 +2935,11 @@ void S9xSoftResetPPU ()
 	for (int i = 0; i < 16; i++)
 	{
 		GFX.PaletteFrame[i] = 1;
-		GFX.PaletteFrame4[i] = 1;
+		for (int bg = 0; bg < 4; bg++)
+			GFX.PaletteFrame4BG[bg][i] = 1;
 	}
 	GFX.PaletteFrame256[0] = 1;
-	ZeroMemory (GFX.VRAMPaletteFrame, 65536 * 16 * 4);
+	ZeroMemory (GFX.VRAMPaletteFrame, 8192 * 16 * 4);
 	IPPU.HiresFlip = 0;
 
 #ifdef CORRECT_VRAM_READS
@@ -2914,6 +2989,9 @@ void S9xSoftResetPPU ()
 	ZeroMemory (&Memory.FillRAM [0x1000], 0x1000);
 
 	Memory.FillRAM[0x4201]=Memory.FillRAM[0x4213]=0xFF;
+
+	for (int i = 0; i < 0x100; i++)
+		IPPU.DeferredRegisterWrite[i] = 0xff00;	
 
 	S9xInitializeVerticalSections();
 }
@@ -3267,12 +3345,20 @@ void S9xSuperFXExec ()
 	if ((Memory.FillRAM [0x3000 + GSU_SFR] & FLG_G) &&
 	    (Memory.FillRAM [0x3000 + GSU_SCMR] & 0x18) == 0x18)
 	{
+		
 	    if (!Settings.WinterGold||Settings.StarfoxHack)
 		FxEmulate (~0);
 	    else
-		FxEmulate ((Memory.FillRAM [0x3000 + GSU_CLSR] & 1) ? 700 : 350);
+		FxEmulate ((Memory.FillRAM [0x3000 + GSU_CLSR] & 1) ? 700 : 350); 
+
+		/*
+		FxEmulate ((Memory.FillRAM [0x3000 + GSU_CLSR] & 1) ? 
+			SuperFX.speedPerLine * 2 : SuperFX.speedPerLine);
+		*/
+		
 	    int GSUStatus = Memory.FillRAM [0x3000 + GSU_SFR] |
 			    (Memory.FillRAM [0x3000 + GSU_SFR + 1] << 8);
+				
 	    if ((GSUStatus & (FLG_G | FLG_IRQ)) == FLG_IRQ)
 	    {
 		// Trigger a GSU IRQ.

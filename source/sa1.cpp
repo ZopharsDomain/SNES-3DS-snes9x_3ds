@@ -91,7 +91,9 @@
 #include "ppu.h"
 #include "cpuexec.h"
 
+
 #include "sa1.h"
+
 
 static void S9xSA1CharConv2 ();
 static void S9xSA1DMA ();
@@ -146,6 +148,7 @@ void S9xSA1Reset ()
 
     S9xSA1UnpackStatus();
     S9xSA1FixCycles ();
+	SA1.WaitCounter = 3;
     SA1.Executing = TRUE;
     SA1.BWRAM = Memory.SRAM;
     Memory.FillRAM [0x2225] = 0;
@@ -232,6 +235,39 @@ uint8 S9xSA1GetByte (uint32 address)
     }
 }
 
+uint8 S9xSA1GetByteSlow (uint32 address, int GetAddress)
+{
+    switch ((int) GetAddress)
+    {
+    case CMemory::MAP_PPU:
+	return (S9xGetSA1 (address & 0xffff));
+    case CMemory::MAP_LOROM_SRAM:
+    case CMemory::MAP_SA1RAM:
+	return (*(Memory.SRAM + (address & 0xffff)));
+    case CMemory::MAP_BWRAM:
+	return (*(SA1.BWRAM + ((address & 0x7fff) - 0x6000)));
+    case CMemory::MAP_BWRAM_BITMAP:
+	address -= 0x600000;
+	if (SA1.VirtualBitmapFormat == 2)
+	    return ((Memory.SRAM [(address >> 2) & 0xffff] >> ((address & 3) << 1)) & 3);
+	else
+	    return ((Memory.SRAM [(address >> 1) & 0xffff] >> ((address & 1) << 2)) & 15);
+    case CMemory::MAP_BWRAM_BITMAP2:
+	address = (address & 0xffff) - 0x6000;
+	if (SA1.VirtualBitmapFormat == 2)
+	    return ((SA1.BWRAM [(address >> 2) & 0xffff] >> ((address & 3) << 1)) & 3);
+	else
+	    return ((SA1.BWRAM [(address >> 1) & 0xffff] >> ((address & 1) << 2)) & 15);
+
+    case CMemory::MAP_DEBUG:
+    default:
+#ifdef DEBUGGER
+//	printf ("R(B) %06x\n", address);
+#endif
+        return OpenBus;
+    }
+}
+
 uint16 S9xSA1GetWord (uint32 address)
 {
     OpenBus = S9xSA1GetByte (address);
@@ -248,6 +284,54 @@ void S9xSA1SetByte (uint8 byte, uint32 address)
 	return;
     }
 
+    switch ((int) Setaddress)
+    {
+    case CMemory::MAP_PPU:
+	S9xSetSA1 (byte, address & 0xffff);
+	return;
+    case CMemory::MAP_SA1RAM:
+    case CMemory::MAP_LOROM_SRAM:
+	*(Memory.SRAM + (address & 0xffff)) = byte;
+	return;
+    case CMemory::MAP_BWRAM:
+	*(SA1.BWRAM + ((address & 0x7fff) - 0x6000)) = byte;
+	return;
+    case CMemory::MAP_BWRAM_BITMAP:
+	address -= 0x600000;
+	if (SA1.VirtualBitmapFormat == 2)
+	{
+	    uint8 *ptr = &Memory.SRAM [(address >> 2) & 0xffff];
+	    *ptr &= ~(3 << ((address & 3) << 1));
+	    *ptr |= (byte & 3) << ((address & 3) << 1);
+	}
+	else
+	{
+	    uint8 *ptr = &Memory.SRAM [(address >> 1) & 0xffff];
+	    *ptr &= ~(15 << ((address & 1) << 2));
+	    *ptr |= (byte & 15) << ((address & 1) << 2);
+	}
+	break;
+    case CMemory::MAP_BWRAM_BITMAP2:
+	address = (address & 0xffff) - 0x6000;
+	if (SA1.VirtualBitmapFormat == 2)
+	{
+	    uint8 *ptr = &SA1.BWRAM [(address >> 2) & 0xffff];
+	    *ptr &= ~(3 << ((address & 3) << 1));
+	    *ptr |= (byte & 3) << ((address & 3) << 1);
+	}
+	else
+	{
+	    uint8 *ptr = &SA1.BWRAM [(address >> 1) & 0xffff];
+	    *ptr &= ~(15 << ((address & 1) << 2));
+	    *ptr |= (byte & 15) << ((address & 1) << 2);
+	}
+    default:
+	return;
+    }
+}
+
+void S9xSA1SetByteSlow (uint8 byte, uint32 address, int Setaddress)
+{
     switch ((int) Setaddress)
     {
     case CMemory::MAP_PPU:
@@ -380,20 +464,24 @@ void S9xSetSA1MemMap (uint32 which1, uint8 map)
 
     for (c = 0; c < 0x100; c += 16)
     {
-	uint8 *block = &Memory.ROM [(map & 7) * 0x100000 + (c << 12)];
-	int i;
+		uint8 *block = &Memory.ROM [(map & 7) * 0x100000 + (c << 12)];
+		int i;
 
-	for (i = c; i < c + 16; i++)
-	    Memory.Map [start + i] = SA1.Map [start + i] = block;
+		for (i = c; i < c + 16; i++)
+			Memory.Map [start + i] = SA1.Map [start + i] = block;
     }
     
     for (c = 0; c < 0x200; c += 16)
     {
-	uint8 *block = &Memory.ROM [(map & 7) * 0x100000 + (c << 11) - 0x8000];
-	int i;
+		// Code from Snes9x 1.54.1 - 
+		// This allows Super Mario World VLDC 9 hack to work
+        // conversion to int is needed here - map is promoted but which1 is not
+        int32 offset = (((map & 0x80) ? map : which1) & 7) * 0x100000 + (c << 11) - 0x8000;
+		uint8	*block = &Memory.ROM[offset];
+		int i;
 
-	for (i = c + 8; i < c + 16; i++)
-	    Memory.Map [start2 + i] = SA1.Map [start2 + i] = block;
+		for (i = c + 8; i < c + 16; i++)
+			Memory.Map [start2 + i] = SA1.Map [start2 + i] = block;
     }
 }
 
@@ -431,7 +519,7 @@ uint8 S9xGetSA1 (uint32 address)
 	return (byte);
     }
     default:	
-	printf ("R: %04x\n", address);
+	//printf ("R: %04x\n", address);
 	break;
     }
     return (Memory.FillRAM [address]);
@@ -458,6 +546,9 @@ void S9xSetSA1 (uint8 byte, uint32 address)
 		SA1.Flags |= IRQ_PENDING_FLAG;
 		SA1.IRQActive |= SNES_IRQ_SOURCE;
 		SA1.Executing = !SA1.Waiting && SA1.S9xOpcodes;
+		if (SA1.Executing) SA1.WaitCounter = 3;
+			//if (SA1.Executing)
+			//	printf("Write 0x2200 - Wake SA1\n");
 	    }
 	}
 	if (byte & 0x10)
@@ -533,21 +624,30 @@ void S9xSetSA1 (uint8 byte, uint32 address)
 	{
 	    SA1.Flags |= IRQ_PENDING_FLAG;
 	    SA1.IRQActive |= SNES_IRQ_SOURCE;
-//	    SA1.Executing = !SA1.Waiting;
+	    SA1.Executing = !SA1.Waiting;
+		if (SA1.Executing) SA1.WaitCounter = 3;
+			//if (SA1.Executing)
+			//	printf("Write 0x220a - Wake SA1\n");
 	}
 	if (((byte ^ Memory.FillRAM [0x220a]) & 0x40) &&
 	    (Memory.FillRAM [0x2301] & byte & 0x40))
 	{
 	    SA1.Flags |= IRQ_PENDING_FLAG;
 	    SA1.IRQActive |= TIMER_IRQ_SOURCE;
-//	    SA1.Executing = !SA1.Waiting;
+	    SA1.Executing = !SA1.Waiting;
+		if (SA1.Executing) SA1.WaitCounter = 3;
+			//if (SA1.Executing)
+			//	printf("Write 0x220a - Wake SA1\n");
 	}
 	if (((byte ^ Memory.FillRAM [0x220a]) & 0x20) &&
 	    (Memory.FillRAM [0x2301] & byte & 0x20))
 	{
 	    SA1.Flags |= IRQ_PENDING_FLAG;
 	    SA1.IRQActive |= DMA_IRQ_SOURCE;
-//	    SA1.Executing = !SA1.Waiting;
+	    SA1.Executing = !SA1.Waiting;
+		if (SA1.Executing) SA1.WaitCounter = 3;
+			//if (SA1.Executing)
+			//	printf("Write 0x220a - Wake SA1\n");
 	}
 	if (((byte ^ Memory.FillRAM [0x220a]) & 0x10) &&
 	    (Memory.FillRAM [0x2301] & byte & 0x10))
@@ -603,19 +703,19 @@ void S9xSetSA1 (uint8 byte, uint32 address)
 #endif
 	break;
     case 0x2211:
-	printf ("Timer reset\n");
+	//printf ("Timer reset\n");
 	break;
     case 0x2212:
-	printf ("H-Timer %04x\n", byte | (Memory.FillRAM [0x2213] << 8));
+	//printf ("H-Timer %04x\n", byte | (Memory.FillRAM [0x2213] << 8));
 	break;
     case 0x2213:
-	printf ("H-Timer %04x\n", (byte << 8) | Memory.FillRAM [0x2212]);
+	//printf ("H-Timer %04x\n", (byte << 8) | Memory.FillRAM [0x2212]);
 	break;
     case 0x2214:
-	printf ("V-Timer %04x\n", byte | (Memory.FillRAM [0x2215] << 8));
+	//printf ("V-Timer %04x\n", byte | (Memory.FillRAM [0x2215] << 8));
 	break;
     case 0x2215:
-	printf ("V-Timer %04x\n", (byte << 8) | Memory.FillRAM [0x2214]);
+	//printf ("V-Timer %04x\n", (byte << 8) | Memory.FillRAM [0x2214]);
 	break;
     case 0x2220:
     case 0x2221:

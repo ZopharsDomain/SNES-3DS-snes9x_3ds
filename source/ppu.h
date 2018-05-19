@@ -92,6 +92,7 @@
 
 #include "port.h"
 #include "3dsgpu.h"
+#include "3dsimpl_gpu.h"
 #include "ppuvsect.h"
 #include "cliphw.h"
 
@@ -181,6 +182,16 @@ struct InternalPPU {
     VerticalSections                WindowLRSections;           // W1/W2 Left/Right
 
     int                             HiresFlip; 
+
+    // Screen colors for Mode 7 Ext BG
+    //
+    uint16 Mode7ScreenColors[256];
+    uint16 Mode7ScreenColors128[256];
+
+    // Added for register change optimization.
+    // Helps in reducing number of FLUSH_REDRAWs per frame.
+    //
+    int                             DeferredRegisterWrite[0x100];    
 };
 
 struct SOBJ
@@ -293,6 +304,11 @@ struct SPPU {
     uint8 BGnxOFSbyte;
     uint8 OpenBus1;
     uint8 OpenBus2;
+
+    // Added for OBJ drawing optimization
+    //
+    int PriorityDrawFromSprite = -1;
+
 };
 
 #define CLIP_OR 0
@@ -369,6 +385,8 @@ END_EXTERN_C
 #define MAX_5A22_VERSION 0x02
 
 
+//#define DEBUG_FLUSH_REDRAW(a,b)   if (IPPU.PreviousLine != IPPU.CurrentLine && IPPU.RenderThisFrame) { printf ("FD: %04x <- %02x @ Y=%d\n", a, b, IPPU.CurrentLine); } else { printf ("    %04x <- %02x @ Y=%d\n", a, b, IPPU.CurrentLine); }
+#define DEBUG_FLUSH_REDRAW(a,b)    
 
 STATIC inline uint8 REGISTER_4212()
 {
@@ -401,7 +419,7 @@ STATIC inline void REGISTER_2104 (uint8 byte)
     {
         int addr = ((PPU.OAMAddr & 0x10f) << 1) + (PPU.OAMFlip & 1);
         if (byte != PPU.OAMData [addr]){
-            FLUSH_REDRAW ();
+            DEBUG_FLUSH_REDRAW(0x2104, byte); FLUSH_REDRAW ();
             PPU.OAMData [addr] = byte;
             IPPU.OBJChanged = TRUE;
 
@@ -445,7 +463,7 @@ STATIC inline void REGISTER_2104 (uint8 byte)
         if (lowbyte != PPU.OAMData [addr] ||
             highbyte != PPU.OAMData [addr+1])
         {
-            FLUSH_REDRAW ();
+            DEBUG_FLUSH_REDRAW(0x2104, byte); FLUSH_REDRAW ();
             PPU.OAMData [addr] = lowbyte;
             PPU.OAMData [addr+1] = highbyte;
             IPPU.OBJChanged = TRUE;
@@ -817,7 +835,10 @@ STATIC inline void REGISTER_2122(uint8 Byte)
             //    printf ("FLUSH_REDRAW palette @ Y=%d\n", IPPU.CurrentLine);
 #endif
             if (PPU.CGADD != 0)
+            {
+                DEBUG_FLUSH_REDRAW(0x2122, Byte); 
     		    FLUSH_REDRAW ();
+            }
         }
 	    PPU.CGDATA[PPU.CGADD] &= 0x00FF;
 	    PPU.CGDATA[PPU.CGADD] |= (Byte & 0x7f) << 8;
@@ -833,7 +854,8 @@ STATIC inline void REGISTER_2122(uint8 Byte)
                                     IPPU.Blue [PPU.CGADD]);
             GFX.PaletteFrame256[0] ++;
             GFX.PaletteFrame[PPU.CGADD / 16] ++;
-            GFX.PaletteFrame4[(PPU.CGADD & 0x1f) / 4] ++;
+            if (PPU.CGADD < 128)
+                GFX.PaletteFrame4BG[PPU.CGADD / 32][(PPU.CGADD & 0x1f) / 4] ++;
             if (PPU.CGADD == 0)
             {
                 S9xUpdateVerticalSectionValue(&IPPU.BackdropColorSections, IPPU.ScreenColors[0]);
@@ -864,7 +886,10 @@ STATIC inline void REGISTER_2122(uint8 Byte)
                 //    printf ("FLUSH_REDRAW palette @ Y=%d\n", IPPU.CurrentLine);
 #endif
                 if (PPU.CGADD != 0)
+                {
+                    DEBUG_FLUSH_REDRAW(0x2122, Byte); 
                     FLUSH_REDRAW ();
+                }
             }
             PPU.CGDATA[PPU.CGADD] &= 0x7F00;
             PPU.CGDATA[PPU.CGADD] |= Byte;
@@ -881,7 +906,8 @@ STATIC inline void REGISTER_2122(uint8 Byte)
 
                 GFX.PaletteFrame256[0] ++;
                 GFX.PaletteFrame[PPU.CGADD / 16] ++;
-                GFX.PaletteFrame4[(PPU.CGADD & 0x1f) / 4] ++;
+            if (PPU.CGADD < 128)
+                GFX.PaletteFrame4BG[PPU.CGADD / 32][(PPU.CGADD & 0x1f) / 4] ++;
                 if (PPU.CGADD == 0)
                 {
                     S9xUpdateVerticalSectionValue(&IPPU.BackdropColorSections, IPPU.ScreenColors[0]);
